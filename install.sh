@@ -12,6 +12,24 @@ if [ "$(id -u)" = 0 ]; then
     exit 1
 fi
 
+# Was das Symbol zum Leben braucht. Geprueft, BEVOR etwas installiert wird:
+# ohne GtkLayerShell startet der Dienst zwar, zeichnet aber nie etwas - und
+# ein Programm, das sauber installiert wurde und stumm nichts tut, ist
+# schwerer zu verstehen als eines, das gar nicht erst einzieht. Auf FuriOS
+# bringt phosh diese Pakete selbst mit, hier feuert das also nie; auf einem
+# Telefon ohne sie ist der fehlende Name die ganze Auskunft.
+if ! python3 - <<'PRUEFUNG' 2>/dev/null
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("GtkLayerShell", "0.1")
+from gi.repository import Gtk, GtkLayerShell  # noqa: F401
+PRUEFUNG
+then
+    echo "Fehlt: python3-gi, gir1.2-gtk-3.0 oder gir1.2-gtklayershell-0.1." >&2
+    echo "Ohne die zeichnet das Symbol nichts - nichts wurde installiert." >&2
+    exit 1
+fi
+
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="$HOME/.local/bin"
 UNIT="$HOME/.config/systemd/user"
