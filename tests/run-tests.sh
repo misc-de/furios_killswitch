@@ -142,6 +142,60 @@ for feld in switches network_extras radios we_disabled cameras camera_hal mic; d
 done
 check "status --json hat alle Felder fuer die App" "" "$fehlend"
 
+# 30-33: Der Aufwach-Ausloeser. Am 14.9. am Telefon widerlegt: LockedHint ging
+# auf true und zurueck auf false, und es wurde NICHT gemessen -- weil die
+# D-Bus-Verbindung nur eine lokale Variable war und mit der Methode verfiel.
+# Nichts schlug fehl, das Signal blieb einfach aus. Deshalb prueft 30 nicht das
+# Abo, sondern dass die Verbindung das Abo ueberlebt.
+wake_test="$(python3 - "$PROG" <<'PYEOF'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("ks", sys.argv[1])
+spec = importlib.util.spec_from_loader("ks", loader)
+mod = importlib.util.module_from_spec(spec); loader.exec_module(mod)
+
+SESSIONS = [[("c4", 1000, "furios", "seat0", "/org/freedesktop/login1/session/c4"),
+             ("1", 1000, "furios", "", "/org/freedesktop/login1/session/1")]]
+
+class FakeBus:
+    def __init__(self): self.subs = []
+    def call_sync(self, *a): return SESSIONS
+    def signal_subscribe(self, *a): self.subs.append(a); return 1
+
+class FakeGio:
+    class BusType: SYSTEM = 0
+    class DBusCallFlags: NONE = 0
+    class DBusSignalFlags: NONE = 0
+    bus = FakeBus()
+    @staticmethod
+    def bus_get_sync(*a): return FakeGio.bus
+
+class FakeGLib:
+    class Error(Exception): pass
+    @staticmethod
+    def VariantType(spec): return spec
+
+ind = mod.Indicator.__new__(mod.Indicator)
+ind.Gio, ind.GLib, ind.verbose = FakeGio, FakeGLib, False
+ind.watch_wakeups()
+
+print("gehalten" if any(v is FakeGio.bus for v in vars(ind).values()) else "verfallen")
+print(FakeGio.bus.subs[0][3])
+
+ausgeloest = []
+ind.start_mic_measurement = ausgeloest.append
+ind.on_session_changed(None, None, None, None, None,
+                       ("org.freedesktop.login1.Session", {"LockedHint": False}, []), None)
+ind.on_session_changed(None, None, None, None, None,
+                       ("org.freedesktop.login1.Session", {"LockedHint": True}, []), None)
+print(",".join(ausgeloest) or "nichts")
+PYEOF
+)"
+check "Verbindung ueberlebt die Methode (sonst kommt nie ein Signal)" \
+    "gehalten" "$(sed -n 1p <<<"$wake_test")"
+check "abonniert wird die Sitzung auf seat0" \
+    "/org/freedesktop/login1/session/c4" "$(sed -n 2p <<<"$wake_test")"
+check "Entsperren loest genau eine Messung aus" "LockedHint" "$(sed -n 3p <<<"$wake_test")"
+
 echo
 echo "$pass bestanden, $fail durchgefallen"
 [ "$fail" -eq 0 ]

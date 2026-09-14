@@ -181,6 +181,40 @@ messen, statt dem ersten Bild zu glauben.
 **Anzeigeskalierung 1,5.** 720x1600 physisch, 480x1067 logisch. Alle Groessen
 im Programm sind logische Pixel.
 
+## Der Aufwach-Ausloeser, und warum er zwei Tage lang nichts tat
+
+Das Mikrofon hat keinen auslesbaren Zustand, es muss gemessen werden, und
+gemessen wird nur zu Anlaessen: beim Start und wenn das Telefon aus dem
+Leerlauf oder aus der Sperre zurueckkommt. logind liefert dafuer genau das
+Richtige -- `PropertiesChanged` auf der Sitzung mit `LockedHint` bzw.
+`IdleHint`. Am 14.9.2026 mit `dbus-monitor` nachgesehen: beide Flanken kommen
+zuverlaessig, `LockedHint true` beim Sperren, `false` beim Entsperren.
+
+Der Dienst bekam trotzdem nie eines dieser Signale zu sehen. Kein Fehler, kein
+Eintrag im Journal, der Dienst `active (running)` -- nur eine Zustandsdatei,
+in der seit dem Start ausschliesslich `"reason": "Start"` stand.
+
+**Die Ursache war eine lokale Variable.** `watch_wakeups()` holte sich die
+Systembus-Verbindung, abonnierte darauf und kehrte zurueck. Damit gab Python
+die Verbindung frei, und das Abo verfiel mit ihr. Isoliert nachgestellt, zwei
+Fassungen desselben Programms, gleicher Ablauf:
+
+| Verbindung | Signale beim Sperren/Entsperren |
+|---|---|
+| nur lokal | **keines** |
+| auf `self` gehalten | beide |
+
+Am Geraet danach belegt, beide Wege: `reason: "LockedHint"` 4,8 s nach dem
+Sperren, und `reason: "LockedHint, nachgeholt"`, wenn die Abkuehlzeit von 20 s
+noch laeuft -- ein Anlass waehrend der Abkuehlzeit wird verschoben, nie
+verworfen.
+
+**Merke:** ein GDBus-Abo lebt auf der Verbindung, nicht fuer sich. Wo die
+Schwesterdienste (`furios-audio-sco-hold`, `pause-on-disconnect`) es richtig
+machen, ist das Zufall der Bauform: dort laeuft die Hauptschleife im selben
+`main()`, das die Verbindung noch haelt. Ein Test darauf prueft nicht das Abo,
+sondern dass die Verbindung die Methode ueberlebt.
+
 ## Die Assistant-Taste
 
 `/usr/libexec/assistant-button` liest `event2` (Keycode 112), Konfiguration aus

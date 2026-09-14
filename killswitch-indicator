@@ -440,6 +440,7 @@ class Indicator:
         self.mic_pending = False
         self.mic_last = 0.0
         self.state = {}
+        self.bus = None                          # see watch_wakeups()
 
         self.win = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
         self.win.set_app_paintable(True)
@@ -619,7 +620,13 @@ class Indicator:
         of what the switch is for.
         """
         try:
-            bus = self.Gio.bus_get_sync(self.Gio.BusType.SYSTEM, None)
+            # The connection is KEPT, not just used. Dropped as a local it
+            # takes the subscription with it: the method returns, Python lets
+            # go of the wrapper, and the signal simply never arrives again --
+            # no error, no warning, the service looks healthy. Measured on
+            # 2026-09-14 with the identical code either way: held, both
+            # LockedHint edges arrive; local, neither does.
+            self.bus = bus = self.Gio.bus_get_sync(self.Gio.BusType.SYSTEM, None)
             sessions = bus.call_sync(
                 "org.freedesktop.login1", "/org/freedesktop/login1",
                 "org.freedesktop.login1.Manager", "ListSessions", None,
