@@ -48,6 +48,15 @@ ENGAGED = "0"
 # property, every ALSA control, /proc/asound, jack states, input devices
 # (448 + 1889 lines). Only listening tells them apart.
 #
+# And listening is what this service no longer does. Telling the two states
+# apart means opening the microphone -- the one thing somebody flips that
+# switch to prevent -- and the answer only ever covers the three seconds it
+# was open. The switch announces itself nowhere, so flipping it while the
+# screen is on triggers nothing at all: the icon would be right some of the
+# time and silently wrong the rest, which is worse than no icon. The housing
+# is the display for this one. What is left below serves `mic-check` only --
+# a measurement asked for by hand, never taken on our own initiative.
+#
 # Measured on the device, 5 runs per state, 3 s each, first 0.7 s of stream
 # startup discarded, RMS taken per 200 ms block:
 #
@@ -64,8 +73,6 @@ ENGAGED = "0"
 #     microphone is cut while it is listening.
 # The median is immune to single disturbed blocks, and the converter's noise
 # floor turns out to be remarkably stable across runs.
-MIC_ICON = "microphone-disabled-symbolic"
-MIC_LABEL = "Mikrofon"
 MIC_MEASURE_S = 3.0        # length of one measurement
 MIC_SKIP_S = 0.7           # stream startup, measured: first blocks read near 0
 MIC_SOURCE = "droid-source"
@@ -78,8 +85,6 @@ MIC_MAX_MEDIAN = 4.5
 # Below this, something is wrong rather than quiet -- a stream handing out
 # digital silence must never be read as "the line is cut".
 MIC_MIN_MEDIAN = 0.5
-# Shortest gap between two measurements. Requests inside it are deferred.
-MIC_COOLDOWN_S = 20
 
 def _config_home():
     """The user's config directory, even when started through sudo.
@@ -400,7 +405,6 @@ def cmd_status(args):
             "we_disabled": state.get("we_disabled", []),
             "cameras": list_cameras(),
             "camera_hal": camera_hal_running(),
-            "mic": state.get("mic"),
         }
         print(json.dumps(data, indent=2))
         return 0
@@ -418,11 +422,11 @@ def cmd_status(args):
 class Indicator:
     """A click-through layer-shell strip drawn inside the top bar."""
 
-    def __init__(self, verbose=False, interval=DEFAULT_INTERVAL_S, check_mic=True):
+    def __init__(self, verbose=False, interval=DEFAULT_INTERVAL_S):
         import gi
         gi.require_version("Gtk", "3.0")
         gi.require_version("GtkLayerShell", "0.1")
-        from gi.repository import Gio, Gtk, GLib, GtkLayerShell
+        from gi.repository import Gtk, GLib, GtkLayerShell
         import cairo
         try:                                     # GLib.unix_fd_add_full is deprecated
             from gi.repository import GLibUnix
@@ -431,16 +435,9 @@ class Indicator:
             self.fd_add = GLib.unix_fd_add_full
 
         self.Gtk, self.GLib, self.GtkLayerShell, self.cairo = Gtk, GLib, GtkLayerShell, cairo
-        self.Gio = Gio
         self.verbose = verbose
         self.interval = interval
-        self.check_mic = check_mic
-        self.mic_locked = False
-        self.mic_busy = False
-        self.mic_pending = False
-        self.mic_last = 0.0
         self.state = {}
-        self.bus = None                          # see watch_wakeups()
 
         self.win = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
         self.win.set_app_paintable(True)
@@ -483,21 +480,15 @@ class Indicator:
             self.box.pack_start(image, False, False, 0)
             self.icons[name] = image
 
-        # Third icon: the microphone switch, ordered after the two sliders the
-        # way they sit on the housing.
-        self.mic_image = Gtk.Image.new_from_icon_name(MIC_ICON, Gtk.IconSize.MENU)
-        self.mic_image.set_pixel_size(ICON_SIZE)
-        self.mic_image.set_no_show_all(True)
-        self.box.pack_start(self.mic_image, False, False, 0)
+        # No third icon: the microphone switch is not read here, by choice --
+        # see the note at the top.
 
         self.win.connect("realize", self.on_realize)
         self.win.connect("destroy", Gtk.main_quit)
         self.win.show_all()
         self.refresh(initial=True)
         self.watch()
-        if self.check_mic:
-            self.watch_wakeups()
-            self.start_mic_measurement("Start")
+        self.forget_stale_mic_state()
 
     def on_realize(self, _widget):
         """Let every touch through: an empty input region.
@@ -524,10 +515,6 @@ class Indicator:
                         threading.Thread(
                             target=apply_network_extras,
                             args=(locked, self.verbose), daemon=True).start()
-                    # Wer an den Schaltern hantiert, legt oft mehrere um -- ein
-                    # guenstiger Moment, auch das Mikrofon nachzusehen.
-                    if self.check_mic:
-                        self.start_mic_measurement(f"{name} umgelegt")
                 elif self.verbose:
                     print(f"{name}: {'GESPERRT' if locked else 'frei'}", flush=True)
         return True
@@ -553,109 +540,16 @@ class Indicator:
                 self.on_sysfs_event, name)
         self.GLib.timeout_add_seconds(self.interval, self.refresh)
 
-    def start_mic_measurement(self, reason):
-        """Measure in a thread; the interface must not freeze for three seconds.
+    def forget_stale_mic_state(self):
+        """Drop a verdict an older version left behind.
 
-        Requests arriving during the cool-down are DEFERRED, never dropped.
-        Dropping them is what left a stale icon on screen: the service measured
-        at startup, the unlock signal arrived seconds later, and the only event
-        that would have corrected the icon was thrown away.
+        It was written by a measurement that has not been repeated since and
+        never will be. Left in state.json it would read like a current answer
+        to anybody opening the file.
         """
-        if self.mic_busy:
-            return
-        wait = MIC_COOLDOWN_S - (time.monotonic() - self.mic_last)
-        if wait > 0:
-            if self.mic_pending:
-                return
-            self.mic_pending = True
-            self.GLib.timeout_add(int(wait * 1000) + 100,
-                                  self.run_deferred_measurement, reason)
-            return
-        self.mic_busy = True
-
-        def run():
-            result = measure_microphone()
-            self.GLib.idle_add(self.finish_mic_measurement, result, reason)
-
-        threading.Thread(target=run, daemon=True).start()
-
-    def run_deferred_measurement(self, reason):
-        self.mic_pending = False
-        self.start_mic_measurement(f"{reason}, nachgeholt")
-        return False
-
-    def finish_mic_measurement(self, result, reason):
-        self.mic_busy = False
-        self.mic_last = time.monotonic()
-        if result is None:
-            if self.verbose:
-                print(f"Mikrofon ({reason}): Messung fehlgeschlagen", flush=True)
-            return False
-        median, peak = result
-        locked = classify_microphone(median)
-        urteil = {True: "GESPERRT", False: "frei", None: "unbrauchbar"}[locked]
-        if self.verbose:
-            print(f"Mikrofon ({reason}): Median {median:.2f} Spitze {peak} -> {urteil}",
-                  flush=True)
         state = load_state()
-        state["mic"] = {"median": round(median, 2), "peak": peak,
-                        "verdict": urteil, "when": int(time.time()),
-                        "reason": reason}
-        save_state(state)
-        if locked is None:
-            return False                       # lieber nichts sagen als falsch
-        if locked != self.mic_locked:
-            self.mic_locked = locked
-            self.mic_image.set_visible(locked)
-            # Immer melden, auch ohne -v: ohne diese Zeile im Journal war nicht
-            # zu sehen, ob eine Messung ueberhaupt stattgefunden hat.
-            print(f"Mikrofon: {urteil} (Median {median:.2f}, Anlass: {reason})", flush=True)
-        return False
-
-    def watch_wakeups(self):
-        """Measure when the phone comes back from idle or gets unlocked.
-
-        A signal, not a poll: there is no cheaper moment to look, and looking
-        constantly would mean opening the microphone constantly -- the opposite
-        of what the switch is for.
-        """
-        try:
-            # The connection is KEPT, not just used. Dropped as a local it
-            # takes the subscription with it: the method returns, Python lets
-            # go of the wrapper, and the signal simply never arrives again --
-            # no error, no warning, the service looks healthy. Measured on
-            # 2026-09-14 with the identical code either way: held, both
-            # LockedHint edges arrive; local, neither does.
-            self.bus = bus = self.Gio.bus_get_sync(self.Gio.BusType.SYSTEM, None)
-            sessions = bus.call_sync(
-                "org.freedesktop.login1", "/org/freedesktop/login1",
-                "org.freedesktop.login1.Manager", "ListSessions", None,
-                self.GLib.VariantType("(a(susso))"),
-                self.Gio.DBusCallFlags.NONE, 5000, None)
-        except self.GLib.Error as err:
-            print(f"logind nicht erreichbar, Mikrofon wird nur beim Start geprueft: {err}",
-                  file=sys.stderr)
-            return
-        path = None
-        for _id, _uid, _user, seat, obj in sessions[0]:
-            if seat == "seat0":
-                path = obj
-                break
-        if path is None:
-            print("keine Sitzung auf seat0 gefunden", file=sys.stderr)
-            return
-        bus.signal_subscribe(
-            "org.freedesktop.login1", "org.freedesktop.DBus.Properties",
-            "PropertiesChanged", path, None, self.Gio.DBusSignalFlags.NONE,
-            self.on_session_changed, None)
-        if self.verbose:
-            print(f"logind-Sitzung beobachtet: {path}", flush=True)
-
-    def on_session_changed(self, _conn, _sender, _path, _iface, _signal, params, _data):
-        changed = params[1]
-        for key in ("IdleHint", "LockedHint"):
-            if key in changed and changed[key] is False:
-                self.start_mic_measurement(key)
+        if state.pop("mic", None) is not None:
+            save_state(state)
 
     def on_sysfs_event(self, fd, _condition, name):
         os.lseek(fd, 0, os.SEEK_SET)
@@ -667,7 +561,12 @@ class Indicator:
 
 
 def cmd_mic_check(_args):
-    """Measure once and report. The microphone switch has no readable state."""
+    """Measure once, by hand, and report.
+
+    The microphone switch has no readable state, so this opens the microphone
+    for three seconds to tell the two apart. The running service never does
+    this on its own -- the answer is only good for those three seconds.
+    """
     result = measure_microphone()
     if result is None:
         print("Messung fehlgeschlagen (laeuft PipeWire, gibt es droid-source?)")
@@ -679,12 +578,13 @@ def cmd_mic_check(_args):
                           None: "Messung unbrauchbar"}[locked])
     print(f"(Schwelle: Median < {MIC_MAX_MEDIAN} gilt als gesperrt; "
           f"unter {MIC_MIN_MEDIAN} als Fehlmessung)")
+    print("Gilt nur fuer diese drei Sekunden: der Schalter meldet sich "
+          "nirgends an, es gibt kein Symbol dafuer.")
     return 0 if locked is not None else 1
 
 
 def cmd_run(args):
-    indicator = Indicator(verbose=args.verbose, interval=args.interval,
-                          check_mic=not args.no_mic)
+    indicator = Indicator(verbose=args.verbose, interval=args.interval)
     signal.signal(signal.SIGTERM, lambda *_: indicator.Gtk.main_quit())
     signal.signal(signal.SIGINT, lambda *_: indicator.Gtk.main_quit())
     indicator.Gtk.main()
@@ -700,8 +600,6 @@ def main():
     common.add_argument("-v", "--verbose", action="store_true",
                         default=argparse.SUPPRESS,
                         help="jede Zustandsaenderung nach stdout melden")
-    common.add_argument("--no-mic", action="store_true", default=argparse.SUPPRESS,
-                        help="das Mikrofon nie messen; dann bleiben zwei Symbole")
     common.add_argument("--interval", type=int, default=argparse.SUPPRESS,
                         metavar="SEK",
                         help=f"Abstand der Pruefungen in Sekunden "
@@ -716,7 +614,8 @@ def main():
     st.add_argument("--json", action="store_true",
                     help="alles als JSON, fuer die Oberflaeche")
     sub.add_parser("mic-check", parents=[common],
-                   help="Mikrofon einmal messen (oeffnet kurz das Mikrofon)")
+                   help="Mikrofon einmal von Hand messen (oeffnet es kurz dafuer); "
+                        "der Dienst selbst misst nie")
     cam = sub.add_parser("cameras", parents=[common],
                          help="zeigen, welche Kameras der Schalter betrifft")
     cam.add_argument("--refresh", action="store_true",
@@ -729,7 +628,6 @@ def main():
                      help="on = mit abschalten, off = unberuehrt lassen")
     args = parser.parse_args()
     args.verbose = getattr(args, "verbose", False)
-    args.no_mic = getattr(args, "no_mic", False)
     args.interval = getattr(args, "interval",
                             int(os.environ.get("FURIOS_KILLSWITCH_INTERVAL",
                                                DEFAULT_INTERVAL_S)))

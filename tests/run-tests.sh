@@ -88,9 +88,10 @@ check "--interval 0 wird abgelehnt" "2" "$?"
 check "Vorgabe steht auf 2 s" "1" "$(grep -c '^DEFAULT_INTERVAL_S = 2' "$PROG")"
 
 # 20-22: Die Mikrofon-Schwelle gegen die tatsaechlich gemessenen Werte. Der
-# dritte Schalter hat KEINEN auslesbaren Zustand (siehe FINDINGS.md), er wird
-# erhoert -- und die Einstufung muss im Zweifel "frei" sagen, niemals faelschlich
-# "gesperrt", solange das Mikrofon hoeren kann.
+# dritte Schalter hat KEINEN auslesbaren Zustand (siehe FINDINGS.md). Von
+# selbst misst hier niemand mehr (Tests 30-33), aber `mic-check` von Hand gibt
+# es weiter -- und dessen Einstufung muss im Zweifel "frei" sagen, niemals
+# faelschlich "gesperrt", solange das Mikrofon hoeren kann.
 mic_urteil() {
     python3 - "$PROG" "$1" <<'PYEOF'
 import importlib.machinery, importlib.util, sys
@@ -137,64 +138,45 @@ check "config lehnt 'modem' ab" "2" "$?"
 # App liest, muessen da sein, auch wenn nichts gemessen wurde.
 json="$(FURIOS_KILLSWITCH_BASE=$TMP "$PROG" status --json)"
 fehlend=""
-for feld in switches network_extras radios we_disabled cameras camera_hal mic; do
+for feld in switches network_extras radios we_disabled cameras camera_hal; do
     grep -q "\"$feld\"" <<<"$json" || fehlend="$fehlend $feld"
 done
 check "status --json hat alle Felder fuer die App" "" "$fehlend"
 
-# 30-33: Der Aufwach-Ausloeser. Am 14.9. am Telefon widerlegt: LockedHint ging
-# auf true und zurueck auf false, und es wurde NICHT gemessen -- weil die
-# D-Bus-Verbindung nur eine lokale Variable war und mit der Methode verfiel.
-# Nichts schlug fehl, das Signal blieb einfach aus. Deshalb prueft 30 nicht das
-# Abo, sondern dass die Verbindung das Abo ueberlebt.
-wake_test="$(python3 - "$PROG" <<'PYEOF'
+# 30-34: Der Dienst misst NICHT. Das ist eine Entscheidung, keine Luecke:
+# unterscheiden hiesse das Mikrofon oeffnen, und die Antwort gilt nur fuer die
+# drei Sekunden der Messung -- umgelegt bei wachem Bildschirm meldet sich der
+# Schalter nirgends. Ein Symbol, das manchmal stimmt, ist schlimmer als keins.
+# Diese Tests halten die Automatik fern, die frueher hier stand (Aufwach-Abo
+# auf logind, Messung beim Start und beim Umlegen der anderen Schalter).
+for weg in start_mic_measurement watch_wakeups on_session_changed mic_image; do
+    check "keine Automatik mehr: $weg" "0" "$(grep -c "def $weg\|self\.$weg" "$PROG")"
+done
+check "kein Aufwach-Abo auf logind" "0" "$(grep -c 'login1' "$PROG")"
+
+# 35: status --json darf kein Messurteil mehr fuehren -- die App liest keins
+# mehr, und ein stehengebliebenes laese sich wie eine aktuelle Antwort.
+check "status --json ohne Messurteil" "0" \
+    "$(FURIOS_KILLSWITCH_BASE=$TMP "$PROG" status --json | grep -c '"mic"')"
+
+# 36: ein Urteil aus einer aelteren Fassung wird beim Start weggeraeumt.
+mkdir -p "$TMP/config/furios-killswitch"
+echo '{"we_disabled": [], "mic": {"verdict": "GESPERRT"}}' \
+    > "$TMP/config/furios-killswitch/state.json"
+python3 - "$PROG" <<'PYEOF2'
 import importlib.machinery, importlib.util, sys
 loader = importlib.machinery.SourceFileLoader("ks", sys.argv[1])
 spec = importlib.util.spec_from_loader("ks", loader)
 mod = importlib.util.module_from_spec(spec); loader.exec_module(mod)
-
-SESSIONS = [[("c4", 1000, "furios", "seat0", "/org/freedesktop/login1/session/c4"),
-             ("1", 1000, "furios", "", "/org/freedesktop/login1/session/1")]]
-
-class FakeBus:
-    def __init__(self): self.subs = []
-    def call_sync(self, *a): return SESSIONS
-    def signal_subscribe(self, *a): self.subs.append(a); return 1
-
-class FakeGio:
-    class BusType: SYSTEM = 0
-    class DBusCallFlags: NONE = 0
-    class DBusSignalFlags: NONE = 0
-    bus = FakeBus()
-    @staticmethod
-    def bus_get_sync(*a): return FakeGio.bus
-
-class FakeGLib:
-    class Error(Exception): pass
-    @staticmethod
-    def VariantType(spec): return spec
-
 ind = mod.Indicator.__new__(mod.Indicator)
-ind.Gio, ind.GLib, ind.verbose = FakeGio, FakeGLib, False
-ind.watch_wakeups()
+ind.forget_stale_mic_state()
+PYEOF2
+check "altes Messurteil wird beim Start vergessen" "0" \
+    "$(grep -c 'mic' "$TMP/config/furios-killswitch/state.json")"
 
-print("gehalten" if any(v is FakeGio.bus for v in vars(ind).values()) else "verfallen")
-print(FakeGio.bus.subs[0][3])
-
-ausgeloest = []
-ind.start_mic_measurement = ausgeloest.append
-ind.on_session_changed(None, None, None, None, None,
-                       ("org.freedesktop.login1.Session", {"LockedHint": False}, []), None)
-ind.on_session_changed(None, None, None, None, None,
-                       ("org.freedesktop.login1.Session", {"LockedHint": True}, []), None)
-print(",".join(ausgeloest) or "nichts")
-PYEOF
-)"
-check "Verbindung ueberlebt die Methode (sonst kommt nie ein Signal)" \
-    "gehalten" "$(sed -n 1p <<<"$wake_test")"
-check "abonniert wird die Sitzung auf seat0" \
-    "/org/freedesktop/login1/session/c4" "$(sed -n 2p <<<"$wake_test")"
-check "Entsperren loest genau eine Messung aus" "LockedHint" "$(sed -n 3p <<<"$wake_test")"
+# 37: von Hand messen bleibt moeglich -- nur eben auf Zuruf.
+check "mic-check gibt es weiterhin" "ja" \
+    "$("$PROG" --help | grep -q 'mic-check' && echo ja || echo nein)"
 
 echo
 echo "$pass bestanden, $fail durchgefallen"

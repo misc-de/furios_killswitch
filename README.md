@@ -15,21 +15,25 @@ weiter die Signalbalken des letzten bekannten Modemzustands.
 |---|---|---|---|
 | Kamera (GPIO 51) | durchgestrichene Kamera | Kamera-HAL ist gestoppt | sysfs, sofort |
 | Mobilfunk (GPIO 52) | durchgestrichene Signalbalken | RIL ist gestoppt | sysfs, sofort |
-| Mikrofon | durchgestrichenes Mikrofon | Leitung ist getrennt | Messung, siehe unten |
+| Mikrofon | **keins** | -- | nicht erkennbar, siehe unten |
 
 Der Mikrofon-Schalter hat **keinen** auslesbaren Zustand -- er ist der einzige
 der drei, der wirklich die Leitung kappt, und genau deshalb sieht das System
-ihn nicht. Er wird daher erhoert: das Programm nimmt drei Sekunden auf und
-vergleicht den Median der Blockpegel mit einer am Geraet gemessenen Schwelle.
+ihn nicht. Unterscheiden liesse er sich nur durchs Zuhoeren: drei Sekunden
+aufnehmen und den Median der Blockpegel mit einer am Geraet gemessenen
+Schwelle vergleichen.
 
-Das geschieht **nicht** laufend, sondern nur beim Start und wenn das Telefon
-aus dem Leerlauf kommt oder entsperrt wird (ein logind-Signal, kein Polling).
-Ein Programm, das im Sekundentakt das Mikrofon oeffnet, waere das Gegenteil
-dessen, wofuer der Schalter da ist. Wer auch das nicht will:
+Genau das tut dieses Programm **nicht** mehr. Dafuer muesste es das Mikrofon
+oeffnen -- das, wogegen der Schalter umgelegt wird --, und die Antwort gaelte
+nur fuer diese drei Sekunden: umgelegt bei wachem Bildschirm meldet sich der
+Schalter nirgends, es gibt kein Ereignis, auf das hin nachgesehen wuerde. Ein
+Symbol, das manchmal stimmt, ist schlechter als keins. Fuer diesen Schalter
+ist der Schieber am Gehaeuse die Anzeige.
+
+Wer doch eine Zahl will, holt sie sich von Hand:
 
 ```bash
-killswitch-indicator run --no-mic      # zwei Symbole, das Mikrofon wird nie angefasst
-killswitch-indicator mic-check         # einmalig von Hand messen
+killswitch-indicator mic-check         # einmal messen, oeffnet dafuer kurz das Mikrofon
 ```
 
 Die Symbole erscheinen rechtsbuendig, links neben Standort, Akku und
@@ -85,7 +89,7 @@ Werkzeug installiert ist.
 killswitch-indicator status     # Schalterstellung ausgeben, ohne Bildschirm
 killswitch-indicator status --json   # alles auf einmal, fuer die Oberflaeche
 killswitch-indicator cameras    # welche Kameras der Schalter betrifft
-killswitch-indicator mic-check  # Mikrofon einmal messen
+killswitch-indicator mic-check  # Mikrofon einmal von Hand messen (der Dienst misst nie)
 killswitch-indicator run -v     # Symbol anzeigen, jede Aenderung protokollieren
 systemctl --user status killswitch-indicator
 journalctl --user -u killswitch-indicator -f

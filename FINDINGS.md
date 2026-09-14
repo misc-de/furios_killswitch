@@ -123,7 +123,11 @@ dieser hier tatsaechlich: der Pegel faellt um 37,8 dB, aber nicht auf digitale
 Stille (91,9 % der Abtastwerte ungleich null) -- der Wandler laeuft weiter und
 liefert sein Eigenrauschen, vor ihm kommt nichts mehr an.
 
-### Wie der Zustand trotzdem erkannt wird
+### Wie der Zustand erkannt werden koennte -- und warum nicht mehr
+
+Alles in diesem Abschnitt ist gemessen und gilt weiter; es traegt seit dem
+14.9.2026 nur noch `mic-check` von Hand. Der Dienst misst **nicht** mehr, es
+gibt **kein** drittes Symbol. Die Begruendung steht unten unter "Entschieden".
 
 Drei Sekunden aufnehmen, die ersten 0,7 s Anlauf verwerfen, RMS je 200-ms-Block,
 davon den **Median**. Gemessen, 5 Laeufe je Zustand:
@@ -148,8 +152,9 @@ den Gruppen, naeher an "gesperrt", damit im Zweifel "frei" herauskommt. Ein
 Median unter 0,5 gilt als Fehlmessung: ein Stream, der digitale Stille
 ausliefert, darf nie als gekappte Leitung gelesen werden.
 
-Gemessen wird nur beim Start und auf ein logind-Signal hin (Ende des Leerlaufs,
-Entsperren). Dauerndes Messen hiesse dauerndes Oeffnen des Mikrofons.
+Gemessen wurde nur beim Start und auf ein logind-Signal hin (Ende des
+Leerlaufs, Entsperren); dauerndes Messen hiesse dauerndes Oeffnen des
+Mikrofons. Dieser Anlass-Mechanismus ist entfernt -- siehe "Entschieden".
 
 ## Fallen beim Bauen der Anzeige
 
@@ -245,9 +250,27 @@ das Bild eines lebenden Mikrofons in einem stillen Raum.
 **Die wirkliche Luecke ist eine andere und unabhaengig davon da:** der
 Mikrofon-Schalter meldet sich nirgends an. Wer ihn bei eingeschaltetem
 Bildschirm umlegt, loest gar nichts aus -- es gibt keinen Anlass zwischen
-Start und Aufwachen, das Symbol bleibt stehen wie es war. Ob dagegen
-regelmaessig nachgemessen wird (was heisst: das Mikrofon regelmaessig kurz
-oeffnen), ist eine Abwaegung und noch nicht entschieden.
+Start und Aufwachen, das Symbol bleibt stehen wie es war.
+
+### Entschieden (14.9.2026): gar nicht mehr messen
+
+Die Abwaegung oben ist gefallen, und zwar gegen das Messen. Die Alternative
+waere gewesen, regelmaessig nachzusehen -- also das Mikrofon regelmaessig zu
+oeffnen, genau das, wogegen jemand den Schalter umlegt. Ohne das bleibt die
+Anzeige zwischen zwei Anlaessen stehen, und eine Anzeige, die manchmal stimmt,
+ist schlechter als keine: sie laedt dazu ein, sich auf sie zu verlassen.
+
+Entfernt: das dritte Symbol, das logind-Abo, die Messung beim Start und beim
+Umlegen der anderen Schalter, die Abkuehlzeit, das Feld `mic` in
+`status --json` (ein stehengebliebenes Urteil in `state.json` wird beim Start
+weggeraeumt). Geblieben: `mic-check`, eine Messung auf Zuruf, mit allen
+Schwellen dieses Abschnitts -- und der Hinweis dort, dass sie nur fuer diese
+drei Sekunden gilt.
+
+Die Oberflaeche sagt das jetzt aus, statt es zu verschweigen: unter "3 ·
+Microphone" steht als Position "not readable - and not listened for either",
+dazu warum, und `mic-check` als das, was von Hand moeglich bleibt. Vier Tests
+(30-34) halten die Automatik fern, damit sie nicht aus Versehen zurueckkommt.
 
 **Merke:** ein GDBus-Abo lebt auf der Verbindung, nicht fuer sich. Wo die
 Schwesterdienste (`furios-audio-sco-hold`, `pause-on-disconnect`) es richtig
