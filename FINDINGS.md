@@ -223,6 +223,32 @@ Spielraum nach unten betraegt nur noch rund das Anderthalbfache -- in einem
 sehr stillen Raum ist das die Groesse, auf die zu achten ist. Beide Werte
 stehen jetzt in den Testreihen.
 
+**UNGEKLAERT, und deshalb hier als offene Frage notiert:** direkt nach diesem
+Versuch meldete der Benutzer, der Schalter sei die ganze Zeit gesperrt
+gewesen und es werde trotzdem kein Symbol gezeigt. Beide Lesarten sind
+moeglich und noch nicht entschieden:
+
+1. Der Schalter war um 17:11 kurz frei (dann ist 6,88 ein echter frei-Wert und
+   die Einstufung stimmt).
+2. Er war durchgehend gesperrt (dann hat die Messung zweimal falsch "frei"
+   gesagt, und die Schwelle taugt nicht).
+
+Was danach gemessen wurde, spricht fuer die erste Lesart. 38 Messungen bei
+gesperrtem Schalter, davon 17 mit eingeschaltetem Bildschirm und dem Telefon
+in der Hand: **Median 2,82 bis 3,17, Spitze 35 bis 45** -- kein einziger
+Ausreisser nach oben. Ein Weckvorgang hebt nur die Spitze (593 und 144
+gemessen), nicht den Median; genau dagegen wurde der Median gewaehlt. Eine
+gekappte Leitung liefert also einen festen Rauschteppich, waehrend die beiden
+strittigen Messungen Spitzen von 148 und 158 bei doppeltem Median zeigten --
+das Bild eines lebenden Mikrofons in einem stillen Raum.
+
+**Die wirkliche Luecke ist eine andere und unabhaengig davon da:** der
+Mikrofon-Schalter meldet sich nirgends an. Wer ihn bei eingeschaltetem
+Bildschirm umlegt, loest gar nichts aus -- es gibt keinen Anlass zwischen
+Start und Aufwachen, das Symbol bleibt stehen wie es war. Ob dagegen
+regelmaessig nachgemessen wird (was heisst: das Mikrofon regelmaessig kurz
+oeffnen), ist eine Abwaegung und noch nicht entschieden.
+
 **Merke:** ein GDBus-Abo lebt auf der Verbindung, nicht fuer sich. Wo die
 Schwesterdienste (`furios-audio-sco-hold`, `pause-on-disconnect`) es richtig
 machen, ist das Zufall der Bauform: dort laeuft die Hauptschleife im selben
