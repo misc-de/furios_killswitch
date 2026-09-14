@@ -1,0 +1,224 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright (c) 2026 misc-de
+# SPDX-License-Identifier: MIT
+"""Show a status-bar icon while a hardware kill switch is engaged.
+
+The FuriPhone FLX1 has two sliding switches wired to GPIO 51 (camera) and
+GPIO 52 (cellular). FuriLabs' own `custom_keys` kernel driver exports their
+position under /sys/devices/platform/custom-keys/ and reports KEY_CAMERA /
+KEY_F2 on an input device -- but that input device is held exclusively
+(EVIOCGRAB) by the Android-side NVRAM HAL, so no Linux program can ever see
+those key events. sysfs is the only readable source, and it is readable
+without root because Android's `system` UID 1000 is the host's `furios`.
+
+Nothing on the FuriOS side displays this state: there is no rfkill device for
+the switches, and phosh's top bar keeps showing cellular bars from the last
+known modem state. That is the gap this fills.
+"""
+import argparse
+import os
+import signal
+import sys
+
+BASE = os.environ.get("FURIOS_KILLSWITCH_BASE", "/sys/devices/platform/custom-keys")
+
+# (sysfs attribute, icon shown while engaged, human label)
+# Attribute reads "1" when the switch lets the hardware work and "0" when it
+# is engaged -- the driver logs the same as "pressed: 0" on the falling edge.
+SWITCHES = [
+    ("cam_switch", "camera-disabled-symbolic", "Kamera"),
+    ("nwk_switch", "network-cellular-disabled-symbolic", "Mobilfunk"),
+]
+ENGAGED = "0"
+
+BAR_HEIGHT = 32          # logical px; phosh's top bar, icons centred inside it
+# Right-aligned, but clear of what phosh already puts there: location, battery
+# and the percentage occupy roughly the rightmost 90 logical px.
+RIGHT_MARGIN = 104
+ICON_SIZE = 16           # matches the size phosh uses for its own indicators
+FALLBACK_POLL_S = 2      # only a safety net; sysfs wakes us first if it can
+
+CSS = b"""
+#killswitch-box { background: transparent; }
+#killswitch-box image {
+    color: #ffb648;
+    -gtk-icon-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+"""
+
+
+def read_switch(name):
+    """Return the raw attribute value, or None when it cannot be read."""
+    try:
+        with open(os.path.join(BASE, name)) as handle:
+            return handle.read().strip()
+    except OSError:
+        return None
+
+
+def engaged_switches():
+    return [(n, i, l) for n, i, l in SWITCHES if read_switch(n) == ENGAGED]
+
+
+def cmd_status(args):
+    """Print switch positions without needing a display. Also used by the tests."""
+    missing = False
+    for name, _, label in SWITCHES:
+        value = read_switch(name)
+        if value is None:
+            print(f"{name}: nicht lesbar ({os.path.join(BASE, name)})")
+            missing = True
+        else:
+            print(f"{name}: {'GESPERRT' if value == ENGAGED else 'frei'} (sysfs={value})  # {label}")
+    return 1 if missing else 0
+
+
+class Indicator:
+    """A click-through layer-shell strip drawn inside the top bar."""
+
+    def __init__(self, verbose=False):
+        import gi
+        gi.require_version("Gtk", "3.0")
+        gi.require_version("GtkLayerShell", "0.1")
+        from gi.repository import Gtk, GLib, GtkLayerShell
+        import cairo
+        try:                                     # GLib.unix_fd_add_full is deprecated
+            from gi.repository import GLibUnix
+            self.fd_add = GLibUnix.fd_add_full
+        except (ImportError, ValueError):
+            self.fd_add = GLib.unix_fd_add_full
+
+        self.Gtk, self.GLib, self.GtkLayerShell, self.cairo = Gtk, GLib, GtkLayerShell, cairo
+        self.verbose = verbose
+        self.state = {}
+
+        self.win = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
+        self.win.set_app_paintable(True)
+        screen = self.win.get_screen()
+        visual = screen.get_rgba_visual()
+        if visual is not None:
+            self.win.set_visual(visual)
+
+        GtkLayerShell.init_for_window(self.win)
+        # OVERLAY, not TOP: phosh's own top bar sits on TOP and is drawn over
+        # anything else there, which leaves the icon invisible. Verified on the
+        # device -- on TOP the window maps and reports a size, and still cannot
+        # be seen in a screenshot.
+        GtkLayerShell.set_layer(self.win, GtkLayerShell.Layer.OVERLAY)
+        for edge in (GtkLayerShell.Edge.TOP, GtkLayerShell.Edge.LEFT, GtkLayerShell.Edge.RIGHT):
+            GtkLayerShell.set_anchor(self.win, edge, True)
+        # -1: reserve no space of our own and do not get pushed below the bar
+        # that already reserves some.
+        GtkLayerShell.set_exclusive_zone(self.win, -1)
+        GtkLayerShell.set_namespace(self.win, "killswitch-indicator")
+
+        self.box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.box.set_name("killswitch-box")
+        self.box.set_halign(Gtk.Align.END)
+        self.box.set_margin_end(RIGHT_MARGIN)
+        self.box.set_valign(Gtk.Align.CENTER)
+        self.win.set_size_request(-1, BAR_HEIGHT)
+        self.win.add(self.box)
+
+        provider = Gtk.CssProvider()
+        provider.load_from_data(CSS)
+        Gtk.StyleContext.add_provider_for_screen(
+            screen, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+        self.icons = {}
+        for name, icon, _label in SWITCHES:
+            image = Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.MENU)
+            image.set_pixel_size(ICON_SIZE)
+            image.set_no_show_all(True)          # visibility is ours to decide
+            self.box.pack_start(image, False, False, 0)
+            self.icons[name] = image
+
+        self.win.connect("realize", self.on_realize)
+        self.win.connect("destroy", Gtk.main_quit)
+        self.win.show_all()
+        self.refresh(initial=True)
+        self.watch()
+
+    def on_realize(self, _widget):
+        """Let every touch through: an empty input region.
+
+        Without this the strip would swallow the swipe that opens phosh's
+        quick settings, right where people reach for it.
+        """
+        gdk_window = self.win.get_window()
+        if gdk_window is not None:
+            gdk_window.input_shape_combine_region(self.cairo.Region(), 0, 0)
+
+    def refresh(self, initial=False):
+        for name, _icon, label in SWITCHES:
+            value = read_switch(name)
+            locked = value == ENGAGED
+            if initial or self.state.get(name) != locked:
+                self.state[name] = locked
+                self.icons[name].set_visible(locked)
+                if self.verbose:
+                    print(f"{name}: {'GESPERRT' if locked else 'frei'}", flush=True)
+        return True
+
+    def watch(self):
+        """Wake on sysfs when the driver notifies, and on a timer regardless.
+
+        Whether the driver calls sysfs_notify() cannot be told by inspection,
+        so both paths are wired up. If it does, the icon appears instantly and
+        the timer finds nothing left to do; if it does not, the timer is what
+        makes this work at all.
+        """
+        for name, _icon, _label in SWITCHES:
+            try:
+                fd = os.open(os.path.join(BASE, name), os.O_RDONLY)
+            except OSError as err:
+                print(f"{name}: {err}", file=sys.stderr)
+                continue
+            os.read(fd, 32)                      # arm the notification
+            self.fd_add(
+                self.GLib.PRIORITY_DEFAULT, fd,
+                self.GLib.IOCondition.PRI | self.GLib.IOCondition.ERR,
+                self.on_sysfs_event, name)
+        self.GLib.timeout_add_seconds(FALLBACK_POLL_S, self.refresh)
+
+    def on_sysfs_event(self, fd, _condition, name):
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.read(fd, 32)                          # re-arm, else we spin
+        if self.verbose:
+            print(f"{name}: sysfs hat die Aenderung selbst gemeldet", flush=True)
+        self.refresh()
+        return True
+
+
+def cmd_run(args):
+    indicator = Indicator(verbose=args.verbose)
+    signal.signal(signal.SIGTERM, lambda *_: indicator.Gtk.main_quit())
+    signal.signal(signal.SIGINT, lambda *_: indicator.Gtk.main_quit())
+    indicator.Gtk.main()
+    return 0
+
+
+def main():
+    # -v has to work on both sides of the subcommand: "run -v" is what anyone
+    # types first, and having only the global form fail there cost a test run
+    # on the device. SUPPRESS keeps the subparser default from overwriting a
+    # flag that was already given in front of the subcommand.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("-v", "--verbose", action="store_true",
+                        default=argparse.SUPPRESS,
+                        help="jede Zustandsaenderung nach stdout melden")
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0],
+                                     parents=[common])
+    sub = parser.add_subparsers(dest="command")
+    sub.add_parser("run", parents=[common], help="Symbol anzeigen (Vorgabe)")
+    sub.add_parser("status", parents=[common],
+                   help="Schalterstellung ausgeben und beenden")
+    args = parser.parse_args()
+    args.verbose = getattr(args, "verbose", False)
+    if args.command == "status":
+        return cmd_status(args)
+    return cmd_run(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

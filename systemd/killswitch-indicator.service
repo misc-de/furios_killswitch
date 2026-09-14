@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 misc-de
+# SPDX-License-Identifier: MIT
+[Unit]
+Description=Status-bar icon while a hardware kill switch is engaged
+Documentation=file:%h/.local/share/doc/killswitch-indicator/README.md
+# The icon is drawn into phosh's top bar, so wait for a top bar to exist.
+# Same ordering the shipped assistant-button listener uses.
+After=sm.puri.Phosh.service
+PartOf=graphical-session.target
+# StartLimit* belong in [Unit]. Put in [Service] they are parsed but never
+# enforced, which is how a sibling project ended up with a restart limit that
+# could not fire. See FINDINGS.md.
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/killswitch-indicator run
+# on-failure, not always: a clean exit means the session is going away.
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=gnome-session.target
