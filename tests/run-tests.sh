@@ -79,6 +79,14 @@ check "-v status wird angenommen" "0" "$?"
 out="$(FURIOS_KILLSWITCH_BASE=$TMP "$PROG" run -v --help 2>&1)"
 check "run -v wird angenommen" "0" "$(grep -c 'unrecognized arguments' <<<"$out")"
 
+# 17-19: das Pruefintervall ist einstellbar, weil es die Reaktionszeit IST --
+# der Treiber meldet nichts von selbst (siehe FINDINGS.md).
+check "--interval wird angeboten" "ja" \
+    "$("$PROG" --help | grep -q -- '--interval' && echo ja || echo nein)"
+FURIOS_KILLSWITCH_BASE=$TMP "$PROG" run --interval 0 >/dev/null 2>&1
+check "--interval 0 wird abgelehnt" "2" "$?"
+check "Vorgabe steht auf 2 s" "1" "$(grep -c '^DEFAULT_INTERVAL_S = 2' "$PROG")"
+
 echo
 echo "$pass bestanden, $fail durchgefallen"
 [ "$fail" -eq 0 ]

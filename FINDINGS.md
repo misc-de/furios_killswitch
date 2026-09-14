@@ -83,6 +83,23 @@ durchgehend seit dem Boot und `persist.vendor.radio.disabled` blieb 0. Der HAL
 laesst sich vom Prellen also nicht taeuschen. Fuer die Anzeige heisst das:
 sysfs lesen (Ruhezustand), nicht Flanken zaehlen.
 
+## Der Treiber meldet Aenderungen nicht von selbst
+
+Gemessen am 14.09. mit zwei Threads auf `cam_switch`: einer wartete blockierend
+in `poll()` auf `POLLPRI`, der andere las den Wert alle 50 ms.
+
+```
+Wertaenderung nach: 58.44s
+poll() meldete nach: NIE (Treiber ruft sysfs_notify nicht)
+```
+
+Die Anzeige kann also nicht ereignisgesteuert arbeiten: das Pruefintervall ist
+unmittelbar die Verzoegerung, mit der das Symbol erscheint. Bei 2 s kostet das
+0,0154 % eines Kerns (65-s-Fenster), hochgerechnet 13,3 s CPU-Zeit pro Tag, bei
+54 MB RSS -- der Speicher von Python samt GTK 3 ist der groessere Posten, nicht
+die Rechenzeit. Laenger takten spart daran nichts Messbares und macht die
+Anzeige nur traeger.
+
 ## Fallen beim Bauen der Anzeige
 
 **Layer `TOP` genuegt nicht.** Ein Layer-Shell-Fenster auf `TOP` wird gemappt,

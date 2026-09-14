@@ -54,9 +54,20 @@ Laeuft ohne Bildschirm: die Schalterstellung wird ueber
 
 Der FuriLabs-eigene Kernel-Treiber `custom_keys` legt die Schalterstellung
 unter `/sys/devices/platform/custom-keys/{cam_switch,nwk_switch}` ab: `1` heisst
-frei, `0` heisst gesperrt. Das Programm haengt sich mit `poll()` an beide
-Attribute und prueft zusaetzlich alle zwei Sekunden nach, weil sich von aussen
-nicht feststellen laesst, ob der Treiber `sysfs_notify()` aufruft.
+frei, `0` heisst gesperrt. Das Programm prueft beide Attribute alle zwei
+Sekunden.
+
+Am Geraet gemessen: der Treiber ruft `sysfs_notify()` **nicht** auf -- `poll()`
+blieb ueber einen vollstaendigen Umschaltvorgang stumm, waehrend der Wert sich
+nachweislich aenderte. Das Intervall ist damit nicht nur ein Sicherheitsnetz,
+sondern die Reaktionszeit der Anzeige. Es kostet 0,0154 % eines Kerns, also
+13,3 s CPU-Zeit pro Tag; laenger heisst spaeter sichtbar, ohne nennenswerte
+Ersparnis. Wer trotzdem drehen will:
+
+```bash
+killswitch-indicator run --interval 10
+# oder dauerhaft in der Unit: FURIOS_KILLSWITCH_INTERVAL=10
+```
 
 Das Symbol ist ein Layer-Shell-Fenster auf der Ebene `OVERLAY` mit leerer
 Eingaberegion -- es faengt also keine Beruehrung ab, insbesondere nicht die

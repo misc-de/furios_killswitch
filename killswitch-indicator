@@ -36,7 +36,12 @@ BAR_HEIGHT = 32          # logical px; phosh's top bar, icons centred inside it
 # and the percentage occupy roughly the rightmost 90 logical px.
 RIGHT_MARGIN = 104
 ICON_SIZE = 16           # matches the size phosh uses for its own indicators
-FALLBACK_POLL_S = 2      # only a safety net; sysfs wakes us first if it can
+# Measured on the device: the driver does NOT call sysfs_notify(). poll() on
+# the attributes stayed silent through a full switch cycle while the value
+# provably changed, so this timer is not a safety net -- it is the only source
+# of updates, and the interval is the delay before the icon appears.
+# At 2 s it costs 0.0154 % of one core, i.e. 13.3 s of CPU time per day.
+DEFAULT_INTERVAL_S = 2
 
 CSS = b"""
 #killswitch-box { background: transparent; }
@@ -76,7 +81,7 @@ def cmd_status(args):
 class Indicator:
     """A click-through layer-shell strip drawn inside the top bar."""
 
-    def __init__(self, verbose=False):
+    def __init__(self, verbose=False, interval=DEFAULT_INTERVAL_S):
         import gi
         gi.require_version("Gtk", "3.0")
         gi.require_version("GtkLayerShell", "0.1")
@@ -90,6 +95,7 @@ class Indicator:
 
         self.Gtk, self.GLib, self.GtkLayerShell, self.cairo = Gtk, GLib, GtkLayerShell, cairo
         self.verbose = verbose
+        self.interval = interval
         self.state = {}
 
         self.win = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
@@ -179,7 +185,7 @@ class Indicator:
                 self.GLib.PRIORITY_DEFAULT, fd,
                 self.GLib.IOCondition.PRI | self.GLib.IOCondition.ERR,
                 self.on_sysfs_event, name)
-        self.GLib.timeout_add_seconds(FALLBACK_POLL_S, self.refresh)
+        self.GLib.timeout_add_seconds(self.interval, self.refresh)
 
     def on_sysfs_event(self, fd, _condition, name):
         os.lseek(fd, 0, os.SEEK_SET)
@@ -191,7 +197,7 @@ class Indicator:
 
 
 def cmd_run(args):
-    indicator = Indicator(verbose=args.verbose)
+    indicator = Indicator(verbose=args.verbose, interval=args.interval)
     signal.signal(signal.SIGTERM, lambda *_: indicator.Gtk.main_quit())
     signal.signal(signal.SIGINT, lambda *_: indicator.Gtk.main_quit())
     indicator.Gtk.main()
@@ -207,6 +213,11 @@ def main():
     common.add_argument("-v", "--verbose", action="store_true",
                         default=argparse.SUPPRESS,
                         help="jede Zustandsaenderung nach stdout melden")
+    common.add_argument("--interval", type=int, default=argparse.SUPPRESS,
+                        metavar="SEK",
+                        help=f"Abstand der Pruefungen in Sekunden "
+                             f"(Vorgabe {DEFAULT_INTERVAL_S}); hoehere Werte "
+                             f"lassen das Symbol entsprechend spaeter erscheinen")
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0],
                                      parents=[common])
     sub = parser.add_subparsers(dest="command")
@@ -215,6 +226,12 @@ def main():
                    help="Schalterstellung ausgeben und beenden")
     args = parser.parse_args()
     args.verbose = getattr(args, "verbose", False)
+    args.interval = getattr(args, "interval",
+                            int(os.environ.get("FURIOS_KILLSWITCH_INTERVAL",
+                                               DEFAULT_INTERVAL_S)))
+    if args.interval < 1:
+        print("--interval muss mindestens 1 Sekunde sein.", file=sys.stderr)
+        return 2
     if args.command == "status":
         return cmd_status(args)
     return cmd_run(args)
