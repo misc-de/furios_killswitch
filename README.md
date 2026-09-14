@@ -73,6 +73,10 @@ Das Symbol ist ein Layer-Shell-Fenster auf der Ebene `OVERLAY` mit leerer
 Eingaberegion -- es faengt also keine Beruehrung ab, insbesondere nicht die
 Wischgeste, die die Schnelleinstellungen oeffnet.
 
+Im Sperrbildschirm ist es ebenfalls zu sehen, an derselben Stelle und ohne
+etwas zu verdecken: man erkennt also ohne Entsperren, dass ein Schalter
+gesperrt ist.
+
 Warum nicht die Tastencodes des Treibers, warum nicht rfkill, und was beim
 Umlegen eines Schalters tatsaechlich passiert: siehe [FINDINGS.md](FINDINGS.md).
 

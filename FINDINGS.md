@@ -114,6 +114,14 @@ die Wischgeste, mit der man die Schnelleinstellungen oeffnet.
 **Exklusivzone -1.** Mit 0 wird das Fenster unter die Leiste geschoben, die
 selbst eine Zone reserviert.
 
+**Sperrbildschirm: geprueft, unkritisch.** `OVERLAY` ist auch die Ebene von
+phoshs Sperrbildschirm. Am 14.09. mit `loginctl lock-session` getestet: die
+Symbole stehen dort an derselben Stelle wie im entsperrten Zustand, ordentlich
+in der Leiste neben Signal, Akku und Prozentanzeige; Uhr, Datum und der Hinweis
+zum Entsperren bleiben unberuehrt. Das ist sogar das gewuenschte Verhalten --
+man sieht ohne Entsperren, dass ein Schalter gesperrt ist. Die leere
+Eingaberegion sorgt dafuer, dass die Wischgeste zum Entsperren durchkommt.
+
 **Screenshots hinken.** `org.gnome.Shell.Screenshot` liefert den zuletzt
 gerenderten Frame. Aendert sich am Bildschirm sonst nichts, zeigt ein
 Screenshot den Stand von vorher -- zweimal ausloesen oder die Lage der Pixel
