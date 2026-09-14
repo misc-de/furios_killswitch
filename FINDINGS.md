@@ -100,6 +100,57 @@ unmittelbar die Verzoegerung, mit der das Symbol erscheint. Bei 2 s kostet das
 die Rechenzeit. Laenger takten spart daran nichts Messbares und macht die
 Anzeige nur traeger.
 
+## Der Mikrofon-Schalter: der einzige echte, und der unsichtbare
+
+Am Geraet gibt es drei Schieber, aber nur zwei GPIOs. Der Mikrofon-Schalter
+taucht im System an **keiner** Stelle auf. Verglichen zwischen gesperrt und
+frei, jeweils ohne einen einzigen Unterschied:
+
+| Quelle | Umfang | Unterschied |
+|---|---|---|
+| GPIOs, Android-Properties, Eingabegeraete, Audioquellen | 448 Zeilen | 0 |
+| ALSA-Controls vollstaendig, /proc/asound, Jack-Zustaende | 1889 Zeilen | 0 |
+
+Das ist kein Versaeumnis der Firmware, sondern die Natur der Sache: ein
+eingebautes Mikrofon ist kein Geraet, das sich an- und abmeldet, sondern eine
+analoge Leitung an einen Codec-Eingang. Anwesenheitserkennung gibt es nur fuer
+die Klinkenbuchse -- dafuer ist ACCDET da, das dort die Impedanz misst. Die
+Codec-Register des PMIC waeren die letzte denkbare Stelle, taugen aber nicht:
+sie aendern sich im Ruhezustand von allein um 1634 Zeilen in zwei Sekunden.
+
+Waehrend Kamera- und Netzschalter nur einen Android-Dienst abschiessen, trennt
+dieser hier tatsaechlich: der Pegel faellt um 37,8 dB, aber nicht auf digitale
+Stille (91,9 % der Abtastwerte ungleich null) -- der Wandler laeuft weiter und
+liefert sein Eigenrauschen, vor ihm kommt nichts mehr an.
+
+### Wie der Zustand trotzdem erkannt wird
+
+Drei Sekunden aufnehmen, die ersten 0,7 s Anlauf verwerfen, RMS je 200-ms-Block,
+davon den **Median**. Gemessen, 5 Laeufe je Zustand:
+
+```
+gesperrt   2.84  2.85  2.89  2.93  3.14
+frei       8.72  25.71 25.77 28.85 50.94
+```
+
+Zwei naheliegendere Kriterien wurden an diesen Daten verworfen:
+
+- **Pegel (mittlerer RMS)**: ein einzelner Klick zieht ihn weg; ein gesperrter
+  Lauf las 6.92 bei Spitze 107.
+- **Schwankung**: wirkte zuerst ueberzeugend (gesperrt 3-5 %, frei 89-121 %),
+  aber ein Lauf im stillen Raum mit LEBENDEM Mikrofon kam auf 13,8 % und waere
+  als gesperrt gemeldet worden. Das ist der eine Fehler, der nicht passieren
+  darf.
+
+Der Median ist gegen einzelne gestoerte Bloecke immun, und das Grundrauschen des
+Wandlers ist ueber Laeufe hinweg bemerkenswert stabil. Schwelle 4,5 -- zwischen
+den Gruppen, naeher an "gesperrt", damit im Zweifel "frei" herauskommt. Ein
+Median unter 0,5 gilt als Fehlmessung: ein Stream, der digitale Stille
+ausliefert, darf nie als gekappte Leitung gelesen werden.
+
+Gemessen wird nur beim Start und auf ein logind-Signal hin (Ende des Leerlaufs,
+Entsperren). Dauerndes Messen hiesse dauerndes Oeffnen des Mikrofons.
+
 ## Fallen beim Bauen der Anzeige
 
 **Layer `TOP` genuegt nicht.** Ein Layer-Shell-Fenster auf `TOP` wird gemappt,

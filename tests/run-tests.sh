@@ -87,6 +87,35 @@ FURIOS_KILLSWITCH_BASE=$TMP "$PROG" run --interval 0 >/dev/null 2>&1
 check "--interval 0 wird abgelehnt" "2" "$?"
 check "Vorgabe steht auf 2 s" "1" "$(grep -c '^DEFAULT_INTERVAL_S = 2' "$PROG")"
 
+# 20-22: Die Mikrofon-Schwelle gegen die tatsaechlich gemessenen Werte. Der
+# dritte Schalter hat KEINEN auslesbaren Zustand (siehe FINDINGS.md), er wird
+# erhoert -- und die Einstufung muss im Zweifel "frei" sagen, niemals faelschlich
+# "gesperrt", solange das Mikrofon hoeren kann.
+mic_urteil() {
+    python3 - "$PROG" "$1" <<'PYEOF'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("ks", sys.argv[1])
+spec = importlib.util.spec_from_loader("ks", loader)
+mod = importlib.util.module_from_spec(spec); loader.exec_module(mod)
+r = mod.classify_microphone(float(sys.argv[2]))
+print({True: "gesperrt", False: "frei", None: "unbrauchbar"}[r])
+PYEOF
+}
+falsch=0
+for wert in 2.84 2.85 2.89 2.93 3.14; do
+    [ "$(mic_urteil $wert)" = "gesperrt" ] || falsch=$((falsch+1))
+done
+check "5 gemessene gesperrt-Werte richtig eingestuft" "0" "$falsch"
+
+falsch=0
+for wert in 8.72 25.71 25.77 28.85 50.94; do
+    [ "$(mic_urteil $wert)" = "frei" ] || falsch=$((falsch+1))
+done
+check "5 gemessene frei-Werte richtig eingestuft" "0" "$falsch"
+
+# Digitale Stille ist ein Messfehler, kein gekapptes Kabel.
+check "digitale Stille gilt als unbrauchbar" "unbrauchbar" "$(mic_urteil 0.0)"
+
 echo
 echo "$pass bestanden, $fail durchgefallen"
 [ "$fail" -eq 0 ]

@@ -11,10 +11,26 @@ weiter die Signalbalken des letzten bekannten Modemzustands.
 
 ## Was angezeigt wird
 
-| Schalter | Symbol | Bedeutung |
-|---|---|---|
-| Kamera (GPIO 51) | durchgestrichene Kamera | Kamera-HAL ist gestoppt |
-| Mobilfunk (GPIO 52) | durchgestrichene Signalbalken | RIL ist gestoppt |
+| Schalter | Symbol | Bedeutung | Erkennung |
+|---|---|---|---|
+| Kamera (GPIO 51) | durchgestrichene Kamera | Kamera-HAL ist gestoppt | sysfs, sofort |
+| Mobilfunk (GPIO 52) | durchgestrichene Signalbalken | RIL ist gestoppt | sysfs, sofort |
+| Mikrofon | durchgestrichenes Mikrofon | Leitung ist getrennt | Messung, siehe unten |
+
+Der Mikrofon-Schalter hat **keinen** auslesbaren Zustand -- er ist der einzige
+der drei, der wirklich die Leitung kappt, und genau deshalb sieht das System
+ihn nicht. Er wird daher erhoert: das Programm nimmt drei Sekunden auf und
+vergleicht den Median der Blockpegel mit einer am Geraet gemessenen Schwelle.
+
+Das geschieht **nicht** laufend, sondern nur beim Start und wenn das Telefon
+aus dem Leerlauf kommt oder entsperrt wird (ein logind-Signal, kein Polling).
+Ein Programm, das im Sekundentakt das Mikrofon oeffnet, waere das Gegenteil
+dessen, wofuer der Schalter da ist. Wer auch das nicht will:
+
+```bash
+killswitch-indicator run --no-mic      # zwei Symbole, das Mikrofon wird nie angefasst
+killswitch-indicator mic-check         # einmalig von Hand messen
+```
 
 Die Symbole erscheinen rechtsbuendig, links neben Standort, Akku und
 Prozentanzeige. Steht ein Schalter frei, ist dort nichts zu sehen.

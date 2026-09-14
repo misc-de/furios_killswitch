@@ -16,9 +16,16 @@ the switches, and phosh's top bar keeps showing cellular bars from the last
 known modem state. That is the gap this fills.
 """
 import argparse
+import array
+import math
 import os
 import signal
+import subprocess
 import sys
+import tempfile
+import threading
+import time
+import wave
 
 BASE = os.environ.get("FURIOS_KILLSWITCH_BASE", "/sys/devices/platform/custom-keys")
 
@@ -30,6 +37,45 @@ SWITCHES = [
     ("nwk_switch", "network-cellular-disabled-symbolic", "Mobilfunk"),
 ]
 ENGAGED = "0"
+
+# The third switch -- the microphone one -- has no readable state at all. It is
+# the only one of the three that physically cuts the line, and that is exactly
+# why the system cannot see it: an internal microphone is not a device that
+# announces itself, it is an analogue line into a codec input. Compared between
+# engaged and free with no difference whatsoever: every GPIO, every Android
+# property, every ALSA control, /proc/asound, jack states, input devices
+# (448 + 1889 lines). Only listening tells them apart.
+#
+# Measured on the device, 5 runs per state, 3 s each, first 0.7 s of stream
+# startup discarded, RMS taken per 200 ms block:
+#
+#   engaged   median 2.84  2.85  2.89  2.93  3.14
+#   free      median 8.72  25.71 25.77 28.85 50.94
+#
+# The MEDIAN of those blocks is the discriminator. Two candidates were tried
+# and rejected against this data:
+#   - level (mean RMS): a single click pulls it far off; one engaged run read
+#     6.92 with peak 107.
+#   - jitter: looked convincing at first, but a quiet-room run with the
+#     microphone LIVE came in at 13.8 % and would have been reported as
+#     engaged. That is the one error that must not happen -- claiming the
+#     microphone is cut while it is listening.
+# The median is immune to single disturbed blocks, and the converter's noise
+# floor turns out to be remarkably stable across runs.
+MIC_ICON = "microphone-disabled-symbolic"
+MIC_LABEL = "Mikrofon"
+MIC_MEASURE_S = 3.0        # length of one measurement
+MIC_SKIP_S = 0.7           # stream startup, measured: first blocks read near 0
+MIC_SOURCE = "droid-source"
+# All three must hold before the icon is shown. Erring towards "free" is the
+# safe direction: claiming the microphone is off while it listens would be the
+# one failure that matters.
+# Halfway between the two groups, leaning towards "free": engaged tops out at
+# 3.14, free bottoms out at 8.72.
+MIC_MAX_MEDIAN = 4.5
+# Below this, something is wrong rather than quiet -- a stream handing out
+# digital silence must never be read as "the line is cut".
+MIC_MIN_MEDIAN = 0.5
 
 BAR_HEIGHT = 32          # logical px; phosh's top bar, icons centred inside it
 # Right-aligned, but clear of what phosh already puts there: location, battery
@@ -61,6 +107,58 @@ def read_switch(name):
         return None
 
 
+def classify_microphone(median):
+    """True = line is cut, False = live, None = measurement not trustworthy.
+
+    Kept separate from the measuring so the thresholds can be tested against
+    the recorded values without a microphone.
+    """
+    if median is None or median < MIC_MIN_MEDIAN:
+        return None
+    return median < MIC_MAX_MEDIAN
+
+
+def measure_microphone(seconds=MIC_MEASURE_S):
+    """Record briefly and return (median block RMS, peak), or None if it failed."""
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        path = tmp.name
+    try:
+        proc = subprocess.Popen(
+            ["pw-record", "--target", MIC_SOURCE, "--rate", "48000",
+             "--channels", "1", "--format", "s16", path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(seconds)
+        # SIGINT, not kill: pw-record has to finish the WAV header, otherwise
+        # the file cannot be read back at all.
+        proc.send_signal(signal.SIGINT)
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        if os.path.getsize(path) < 2000:
+            return None
+        with wave.open(path) as handle:
+            rate = handle.getframerate()
+            samples = array.array("h")
+            samples.frombytes(handle.readframes(handle.getnframes()))
+        samples = samples[int(MIC_SKIP_S * rate):]
+        if len(samples) < rate // 2:
+            return None
+        block = rate // 5                      # 200 ms
+        blocks = sorted(math.sqrt(sum(x * x for x in samples[i:i + block]) / block)
+                        for i in range(0, len(samples) - block, block))
+        if not blocks:
+            return None
+        return blocks[len(blocks) // 2], max(abs(x) for x in samples)
+    except (OSError, wave.Error, subprocess.SubprocessError):
+        return None
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
 def engaged_switches():
     return [(n, i, l) for n, i, l in SWITCHES if read_switch(n) == ENGAGED]
 
@@ -81,11 +179,11 @@ def cmd_status(args):
 class Indicator:
     """A click-through layer-shell strip drawn inside the top bar."""
 
-    def __init__(self, verbose=False, interval=DEFAULT_INTERVAL_S):
+    def __init__(self, verbose=False, interval=DEFAULT_INTERVAL_S, check_mic=True):
         import gi
         gi.require_version("Gtk", "3.0")
         gi.require_version("GtkLayerShell", "0.1")
-        from gi.repository import Gtk, GLib, GtkLayerShell
+        from gi.repository import Gio, Gtk, GLib, GtkLayerShell
         import cairo
         try:                                     # GLib.unix_fd_add_full is deprecated
             from gi.repository import GLibUnix
@@ -94,8 +192,13 @@ class Indicator:
             self.fd_add = GLib.unix_fd_add_full
 
         self.Gtk, self.GLib, self.GtkLayerShell, self.cairo = Gtk, GLib, GtkLayerShell, cairo
+        self.Gio = Gio
         self.verbose = verbose
         self.interval = interval
+        self.check_mic = check_mic
+        self.mic_locked = False
+        self.mic_busy = False
+        self.mic_last = 0.0
         self.state = {}
 
         self.win = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
@@ -139,11 +242,21 @@ class Indicator:
             self.box.pack_start(image, False, False, 0)
             self.icons[name] = image
 
+        # Third icon: the microphone switch, ordered after the two sliders the
+        # way they sit on the housing.
+        self.mic_image = Gtk.Image.new_from_icon_name(MIC_ICON, Gtk.IconSize.MENU)
+        self.mic_image.set_pixel_size(ICON_SIZE)
+        self.mic_image.set_no_show_all(True)
+        self.box.pack_start(self.mic_image, False, False, 0)
+
         self.win.connect("realize", self.on_realize)
         self.win.connect("destroy", Gtk.main_quit)
         self.win.show_all()
         self.refresh(initial=True)
         self.watch()
+        if self.check_mic:
+            self.watch_wakeups()
+            self.start_mic_measurement("Start")
 
     def on_realize(self, _widget):
         """Let every touch through: an empty input region.
@@ -187,6 +300,77 @@ class Indicator:
                 self.on_sysfs_event, name)
         self.GLib.timeout_add_seconds(self.interval, self.refresh)
 
+    def start_mic_measurement(self, reason):
+        """Measure in a thread; the interface must not freeze for three seconds."""
+        if self.mic_busy or time.monotonic() - self.mic_last < 30:
+            return
+        self.mic_busy = True
+
+        def run():
+            result = measure_microphone()
+            self.GLib.idle_add(self.finish_mic_measurement, result, reason)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def finish_mic_measurement(self, result, reason):
+        self.mic_busy = False
+        self.mic_last = time.monotonic()
+        if result is None:
+            if self.verbose:
+                print(f"Mikrofon ({reason}): Messung fehlgeschlagen", flush=True)
+            return False
+        median, peak = result
+        locked = classify_microphone(median)
+        if self.verbose:
+            print(f"Mikrofon ({reason}): Median {median:.2f} Spitze {peak} -> "
+                  f"{ {True: 'GESPERRT', False: 'frei', None: 'unbrauchbar'}[locked] }",
+                  flush=True)
+        if locked is None:
+            return False                       # lieber nichts sagen als falsch
+        if locked != self.mic_locked:
+            self.mic_locked = locked
+            self.mic_image.set_visible(locked)
+        return False
+
+    def watch_wakeups(self):
+        """Measure when the phone comes back from idle or gets unlocked.
+
+        A signal, not a poll: there is no cheaper moment to look, and looking
+        constantly would mean opening the microphone constantly -- the opposite
+        of what the switch is for.
+        """
+        try:
+            bus = self.Gio.bus_get_sync(self.Gio.BusType.SYSTEM, None)
+            sessions = bus.call_sync(
+                "org.freedesktop.login1", "/org/freedesktop/login1",
+                "org.freedesktop.login1.Manager", "ListSessions", None,
+                self.GLib.VariantType("(a(susso))"),
+                self.Gio.DBusCallFlags.NONE, 5000, None)
+        except self.GLib.Error as err:
+            print(f"logind nicht erreichbar, Mikrofon wird nur beim Start geprueft: {err}",
+                  file=sys.stderr)
+            return
+        path = None
+        for _id, _uid, _user, seat, obj in sessions[0]:
+            if seat == "seat0":
+                path = obj
+                break
+        if path is None:
+            print("keine Sitzung auf seat0 gefunden", file=sys.stderr)
+            return
+        bus.signal_subscribe(
+            "org.freedesktop.login1", "org.freedesktop.DBus.Properties",
+            "PropertiesChanged", path, None, self.Gio.DBusSignalFlags.NONE,
+            self.on_session_changed, None)
+        if self.verbose:
+            print(f"logind-Sitzung beobachtet: {path}", flush=True)
+
+    def on_session_changed(self, _conn, _sender, _path, _iface, _signal, params, _data):
+        changed = params[1]
+        for key in ("IdleHint", "LockedHint"):
+            if key in changed and changed[key] is False:
+                self.start_mic_measurement(key)
+
     def on_sysfs_event(self, fd, _condition, name):
         os.lseek(fd, 0, os.SEEK_SET)
         os.read(fd, 32)                          # re-arm, else we spin
@@ -196,8 +380,25 @@ class Indicator:
         return True
 
 
+def cmd_mic_check(_args):
+    """Measure once and report. The microphone switch has no readable state."""
+    result = measure_microphone()
+    if result is None:
+        print("Messung fehlgeschlagen (laeuft PipeWire, gibt es droid-source?)")
+        return 1
+    median, peak = result
+    locked = classify_microphone(median)
+    print(f"Median-RMS {median:.2f}  Spitze {peak}")
+    print("Mikrofon: " + {True: "GESPERRT", False: "frei",
+                          None: "Messung unbrauchbar"}[locked])
+    print(f"(Schwelle: Median < {MIC_MAX_MEDIAN} gilt als gesperrt; "
+          f"unter {MIC_MIN_MEDIAN} als Fehlmessung)")
+    return 0 if locked is not None else 1
+
+
 def cmd_run(args):
-    indicator = Indicator(verbose=args.verbose, interval=args.interval)
+    indicator = Indicator(verbose=args.verbose, interval=args.interval,
+                          check_mic=not args.no_mic)
     signal.signal(signal.SIGTERM, lambda *_: indicator.Gtk.main_quit())
     signal.signal(signal.SIGINT, lambda *_: indicator.Gtk.main_quit())
     indicator.Gtk.main()
@@ -213,6 +414,8 @@ def main():
     common.add_argument("-v", "--verbose", action="store_true",
                         default=argparse.SUPPRESS,
                         help="jede Zustandsaenderung nach stdout melden")
+    common.add_argument("--no-mic", action="store_true", default=argparse.SUPPRESS,
+                        help="das Mikrofon nie messen; dann bleiben zwei Symbole")
     common.add_argument("--interval", type=int, default=argparse.SUPPRESS,
                         metavar="SEK",
                         help=f"Abstand der Pruefungen in Sekunden "
@@ -224,8 +427,11 @@ def main():
     sub.add_parser("run", parents=[common], help="Symbol anzeigen (Vorgabe)")
     sub.add_parser("status", parents=[common],
                    help="Schalterstellung ausgeben und beenden")
+    sub.add_parser("mic-check", parents=[common],
+                   help="Mikrofon einmal messen (oeffnet kurz das Mikrofon)")
     args = parser.parse_args()
     args.verbose = getattr(args, "verbose", False)
+    args.no_mic = getattr(args, "no_mic", False)
     args.interval = getattr(args, "interval",
                             int(os.environ.get("FURIOS_KILLSWITCH_INTERVAL",
                                                DEFAULT_INTERVAL_S)))
@@ -234,6 +440,8 @@ def main():
         return 2
     if args.command == "status":
         return cmd_status(args)
+    if args.command == "mic-check":
+        return cmd_mic_check(args)
     return cmd_run(args)
 
 
