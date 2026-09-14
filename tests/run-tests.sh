@@ -116,6 +116,32 @@ check "5 gemessene frei-Werte richtig eingestuft" "0" "$falsch"
 # Digitale Stille ist ein Messfehler, kein gekapptes Kabel.
 check "digitale Stille gilt als unbrauchbar" "unbrauchbar" "$(mic_urteil 0.0)"
 
+# 23-27: Was der Netzschalter zusaetzlich abschalten darf. Vorgabe ist nichts:
+# ein Schalter, der stillschweigend mehr tut als angeschrieben, ist schlimmer
+# als einer, der zu wenig tut.
+export XDG_CONFIG_HOME="$TMP/config"
+check "Vorgabe: Wi-Fi bleibt unberuehrt" "nein" "$("$PROG" config wifi)"
+check "Vorgabe: Bluetooth bleibt unberuehrt" "nein" "$("$PROG" config bluetooth)"
+"$PROG" config wifi on >/dev/null
+check "eingeschaltet und gemerkt" "ja" "$("$PROG" config wifi)"
+check "das Nachbarfeld bleibt davon unberuehrt" "nein" "$("$PROG" config bluetooth)"
+"$PROG" config wifi off >/dev/null
+check "wieder abgewaehlt" "nein" "$("$PROG" config wifi)"
+
+# 28: Das Modem taucht hier absichtlich NICHT auf - die Android-Seite stoppt
+# den RIL, bevor dieses Programm von der Schalterstellung erfaehrt.
+"$PROG" config modem on >/dev/null 2>&1
+check "config lehnt 'modem' ab" "2" "$?"
+
+# 29: status --json ist der Vertrag mit der Oberflaeche - die Felder, die die
+# App liest, muessen da sein, auch wenn nichts gemessen wurde.
+json="$(FURIOS_KILLSWITCH_BASE=$TMP "$PROG" status --json)"
+fehlend=""
+for feld in switches network_extras radios we_disabled cameras camera_hal mic; do
+    grep -q "\"$feld\"" <<<"$json" || fehlend="$fehlend $feld"
+done
+check "status --json hat alle Felder fuer die App" "" "$fehlend"
+
 echo
 echo "$pass bestanden, $fail durchgefallen"
 [ "$fail" -eq 0 ]

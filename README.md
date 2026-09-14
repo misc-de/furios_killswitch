@@ -48,10 +48,44 @@ Kein root noetig, nirgends: gelesen werden nur zwei sysfs-Attribute, und die
 sind lesbar, weil Androids `system`-UID 1000 auf diesem Geraet der Nutzer
 `furios` ist.
 
+## Was der Netzschalter zusaetzlich abschalten darf
+
+Der Schalter selbst nimmt nur das Modem herunter -- WLAN und Bluetooth laufen
+weiter. Beides laesst sich dazunehmen; das Programm schaltet sie dann ab,
+sobald der Schalter sperrt, und wieder ein, wenn er zurueckgeht:
+
+```bash
+killswitch-indicator config                 # zeigen, was eingestellt ist
+killswitch-indicator config wifi on         # WLAN mit abschalten
+killswitch-indicator config bluetooth off   # Bluetooth in Ruhe lassen
+```
+
+Vorgabe ist beides aus: ein Schalter, der stillschweigend mehr tut als
+angeschrieben, ist schlimmer als einer, der zu wenig tut. Wieder eingeschaltet
+wird nur, was dieses Programm selbst abgeschaltet hat -- wer WLAN vorher von
+Hand aus hatte, findet es hinterher nicht an.
+
+Das **Modem** laesst sich nicht abwaehlen. Die Android-Seite stoppt den RIL,
+bevor hier ueberhaupt jemand von der Schalterstellung erfaehrt; es abzuwaehlen
+hiesse, das Modem hinter dem Schalter wieder hochzufahren.
+
+Kein root noetig: `logind` ordnet den Dienst der aktiven Sitzung zu, und
+NetworkManager erlaubt ihr das Schalten ohne Passwort (`allow_active`).
+
+## Die Oberflaeche
+
+Der Reiter **Switches** in der App `misc-de` (aus furios_pipewire) zeigt alle
+drei Schalter, schaltet den Indikator an und aus, merkt sich das ueber den
+Neustart hinaus und bietet die Auswahl oben an. Er erscheint nur, wenn dieses
+Werkzeug installiert ist.
+
 ## Bedienung
 
 ```bash
 killswitch-indicator status     # Schalterstellung ausgeben, ohne Bildschirm
+killswitch-indicator status --json   # alles auf einmal, fuer die Oberflaeche
+killswitch-indicator cameras    # welche Kameras der Schalter betrifft
+killswitch-indicator mic-check  # Mikrofon einmal messen
 killswitch-indicator run -v     # Symbol anzeigen, jede Aenderung protokollieren
 systemctl --user status killswitch-indicator
 journalctl --user -u killswitch-indicator -f

@@ -17,6 +17,8 @@ known modem state. That is the gap this fills.
 """
 import argparse
 import array
+import configparser
+import json
 import math
 import os
 import signal
@@ -76,6 +78,75 @@ MIC_MAX_MEDIAN = 4.5
 # Below this, something is wrong rather than quiet -- a stream handing out
 # digital silence must never be read as "the line is cut".
 MIC_MIN_MEDIAN = 0.5
+# Shortest gap between two measurements. Requests inside it are deferred.
+MIC_COOLDOWN_S = 20
+
+def _config_home():
+    """The user's config directory, even when started through sudo.
+
+    `sudo` moves HOME to /root, and the one command here that needs root -- the
+    one-off camera query -- would otherwise write its cache where the user can
+    never read it. Which is exactly what happened the first time.
+    """
+    sudo_user = os.environ.get("SUDO_USER")
+    if sudo_user and os.geteuid() == 0:
+        import pwd
+        try:
+            return os.path.join(pwd.getpwnam(sudo_user).pw_dir, ".config")
+        except KeyError:
+            pass
+    return os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
+
+
+CONFIG_DIR = os.path.join(_config_home(), "furios-killswitch")
+CONFIG_FILE = os.path.join(CONFIG_DIR, "config.ini")
+STATE_FILE = os.path.join(CONFIG_DIR, "state.json")
+
+# What the network switch may take down IN ADDITION to what it already does.
+# The switch itself only kills the RIL; Wi-Fi and Bluetooth keep running. These
+# extend its reach in software, for people who read that switch as "radios off".
+# Both default to off: a switch that silently does more than it says is worse
+# than one that does too little.
+RADIOS = {
+    "wifi": ("Wi-Fi", "org.freedesktop.NetworkManager", "/org/freedesktop/NetworkManager",
+             "org.freedesktop.NetworkManager", "WirelessEnabled"),
+    "bluetooth": ("Bluetooth", "org.bluez", "/org/bluez/hci0",
+                  "org.bluez.Adapter1", "Powered"),
+}
+
+
+def load_config():
+    parser = configparser.ConfigParser()
+    parser.read(CONFIG_FILE)
+    if not parser.has_section("network"):
+        parser.add_section("network")
+    return parser
+
+
+def config_enabled(parser, radio):
+    return parser.getboolean("network", radio, fallback=False)
+
+
+def save_config(parser):
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    with open(CONFIG_FILE, "w") as handle:
+        parser.write(handle)
+
+
+def load_state():
+    try:
+        with open(STATE_FILE) as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(state):
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    tmp = STATE_FILE + ".neu"
+    with open(tmp, "w") as handle:
+        json.dump(state, handle)
+    os.replace(tmp, STATE_FILE)
 
 BAR_HEIGHT = 32          # logical px; phosh's top bar, icons centred inside it
 # Right-aligned, but clear of what phosh already puts there: location, battery
@@ -163,8 +234,176 @@ def engaged_switches():
     return [(n, i, l) for n, i, l in SWITCHES if read_switch(n) == ENGAGED]
 
 
+def radio_state(radio):
+    """True/False, or None when the service behind it is not reachable."""
+    from gi.repository import Gio, GLib
+    _label, service, path, iface, prop = RADIOS[radio]
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+        value = bus.call_sync(
+            service, path, "org.freedesktop.DBus.Properties", "Get",
+            GLib.Variant("(ss)", (iface, prop)), GLib.VariantType("(v)"),
+            Gio.DBusCallFlags.NONE, 3000, None)
+        return bool(value[0])
+    except GLib.Error:
+        return None
+
+
+def set_radio(radio, enabled):
+    """Switch one radio. Returns True when it went through."""
+    from gi.repository import Gio, GLib
+    _label, service, path, iface, prop = RADIOS[radio]
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+        bus.call_sync(
+            service, path, "org.freedesktop.DBus.Properties", "Set",
+            GLib.Variant("(ssv)", (iface, prop, GLib.Variant("b", enabled))),
+            None, Gio.DBusCallFlags.NONE, 5000, None)
+        return True
+    except GLib.Error as err:
+        print(f"{radio}: {err.message}", file=sys.stderr)
+        return False
+
+
+def apply_network_extras(engaged, verbose=False):
+    """Take down (or bring back) the extra radios when the switch moves.
+
+    Only radios this program switched off are switched back on. Someone who
+    turned Wi-Fi off by hand before flipping the switch should not find it on
+    afterwards -- restoring something the user did not ask for is the kind of
+    surprise that makes people distrust the whole thing.
+    """
+    config = load_config()
+    state = load_state()
+    ours = set(state.get("we_disabled", []))
+    for radio in RADIOS:
+        if not config_enabled(config, radio):
+            continue
+        if engaged:
+            if radio_state(radio) is True and set_radio(radio, False):
+                ours.add(radio)
+                if verbose:
+                    print(f"{radio}: ausgeschaltet (Netzschalter)", flush=True)
+        elif radio in ours:
+            if set_radio(radio, True):
+                ours.discard(radio)
+                if verbose:
+                    print(f"{radio}: wieder eingeschaltet", flush=True)
+    state["we_disabled"] = sorted(ours)
+    save_state(state)
+
+
+CAMERA_CACHE = os.path.join(CONFIG_DIR, "cameras.json")
+
+
+def list_cameras(refresh=False):
+    """Which cameras exist and which way they face.
+
+    Asking the Android side needs root (lxc-attach), so the answer is cached:
+    the number of cameras in a phone does not change. Everything else here runs
+    without root, and one root call to write a file once should not turn into a
+    daemon that needs it.
+    """
+    if not refresh:
+        try:
+            with open(CAMERA_CACHE) as handle:
+                return json.load(handle)
+        except (OSError, ValueError):
+            pass
+    try:
+        out = subprocess.run(
+            ["/usr/bin/lxc-attach", "-n", "android", "--",
+             "/system/bin/dumpsys", "media.camera"],
+            capture_output=True, text=True, timeout=20).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    facings = [line.split(":", 1)[1].strip()
+               for line in out.splitlines() if line.strip().startswith("Facing:")]
+    if not facings:
+        return None
+    try:
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        with open(CAMERA_CACHE, "w") as handle:
+            json.dump(facings, handle)
+        _give_back(CONFIG_DIR)
+        _give_back(CAMERA_CACHE)
+    except OSError:
+        pass
+    return facings
+
+
+def _give_back(path):
+    """Hand a file written under sudo back to the user it belongs to."""
+    uid = os.environ.get("SUDO_UID")
+    gid = os.environ.get("SUDO_GID")
+    if uid and gid and os.geteuid() == 0:
+        try:
+            os.chown(path, int(uid), int(gid))
+        except OSError:
+            pass
+
+
+def camera_hal_running():
+    """True/False from the Android property, or None when it cannot be read.
+
+    This is the direct answer to "is the camera switch engaged right now" from
+    the other end: the switch works by stopping exactly this service.
+    """
+    try:
+        out = subprocess.run(["getprop", "init.svc.camerahalserver"],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return {"running": True, "stopped": False}.get(out)
+
+
+def cmd_cameras(args):
+    cams = list_cameras(refresh=getattr(args, "refresh", False))
+    if cams is None:
+        print("Kameraliste noch nicht bekannt. Einmalig mit root abfragen:")
+        print("  sudo killswitch-indicator cameras --refresh")
+        return 1
+    print(f"{len(cams)} Kameras, alle vom Schalter betroffen:")
+    for index, facing in enumerate(cams):
+        seite = {"Back": "Rueckseite", "Front": "Vorderseite"}.get(facing, facing)
+        print(f"  Kamera {index}: {seite}")
+    print("Der Schalter stoppt camerahalserver - das gilt immer fuer alle "
+          "Kameras zugleich, einzeln geht nicht.")
+    return 0
+
+
+def cmd_config(args):
+    config = load_config()
+    if args.radio is None:
+        for radio, (label, *_rest) in RADIOS.items():
+            print(f"{radio:10s} {'ja' if config_enabled(config, radio) else 'nein':5s}"
+                  f"  # {label} beim Netzschalter mit abschalten")
+        return 0
+    if args.value is None:
+        print("ja" if config_enabled(config, args.radio) else "nein")
+        return 0
+    config.set("network", args.radio, "yes" if args.value == "on" else "no")
+    save_config(config)
+    print(f"{args.radio}: {'ja' if args.value == 'on' else 'nein'}")
+    return 0
+
+
 def cmd_status(args):
     """Print switch positions without needing a display. Also used by the tests."""
+    if getattr(args, "json", False):
+        config = load_config()
+        state = load_state()
+        data = {
+            "switches": {name: read_switch(name) for name, _i, _l in SWITCHES},
+            "network_extras": {r: config_enabled(config, r) for r in RADIOS},
+            "radios": {r: radio_state(r) for r in RADIOS},
+            "we_disabled": state.get("we_disabled", []),
+            "cameras": list_cameras(),
+            "camera_hal": camera_hal_running(),
+            "mic": state.get("mic"),
+        }
+        print(json.dumps(data, indent=2))
+        return 0
     missing = False
     for name, _, label in SWITCHES:
         value = read_switch(name)
@@ -198,6 +437,7 @@ class Indicator:
         self.check_mic = check_mic
         self.mic_locked = False
         self.mic_busy = False
+        self.mic_pending = False
         self.mic_last = 0.0
         self.state = {}
 
@@ -275,7 +515,19 @@ class Indicator:
             if initial or self.state.get(name) != locked:
                 self.state[name] = locked
                 self.icons[name].set_visible(locked)
-                if self.verbose:
+                if not initial:
+                    print(f"{name}: {'GESPERRT' if locked else 'frei'}", flush=True)
+                    if name == "nwk_switch":
+                        # Im Thread: die D-Bus-Aufrufe koennen Sekunden dauern,
+                        # und die Leiste darf dabei nicht stehenbleiben.
+                        threading.Thread(
+                            target=apply_network_extras,
+                            args=(locked, self.verbose), daemon=True).start()
+                    # Wer an den Schaltern hantiert, legt oft mehrere um -- ein
+                    # guenstiger Moment, auch das Mikrofon nachzusehen.
+                    if self.check_mic:
+                        self.start_mic_measurement(f"{name} umgelegt")
+                elif self.verbose:
                     print(f"{name}: {'GESPERRT' if locked else 'frei'}", flush=True)
         return True
 
@@ -301,8 +553,22 @@ class Indicator:
         self.GLib.timeout_add_seconds(self.interval, self.refresh)
 
     def start_mic_measurement(self, reason):
-        """Measure in a thread; the interface must not freeze for three seconds."""
-        if self.mic_busy or time.monotonic() - self.mic_last < 30:
+        """Measure in a thread; the interface must not freeze for three seconds.
+
+        Requests arriving during the cool-down are DEFERRED, never dropped.
+        Dropping them is what left a stale icon on screen: the service measured
+        at startup, the unlock signal arrived seconds later, and the only event
+        that would have corrected the icon was thrown away.
+        """
+        if self.mic_busy:
+            return
+        wait = MIC_COOLDOWN_S - (time.monotonic() - self.mic_last)
+        if wait > 0:
+            if self.mic_pending:
+                return
+            self.mic_pending = True
+            self.GLib.timeout_add(int(wait * 1000) + 100,
+                                  self.run_deferred_measurement, reason)
             return
         self.mic_busy = True
 
@@ -311,6 +577,11 @@ class Indicator:
             self.GLib.idle_add(self.finish_mic_measurement, result, reason)
 
         threading.Thread(target=run, daemon=True).start()
+
+    def run_deferred_measurement(self, reason):
+        self.mic_pending = False
+        self.start_mic_measurement(f"{reason}, nachgeholt")
+        return False
 
     def finish_mic_measurement(self, result, reason):
         self.mic_busy = False
@@ -321,15 +592,23 @@ class Indicator:
             return False
         median, peak = result
         locked = classify_microphone(median)
+        urteil = {True: "GESPERRT", False: "frei", None: "unbrauchbar"}[locked]
         if self.verbose:
-            print(f"Mikrofon ({reason}): Median {median:.2f} Spitze {peak} -> "
-                  f"{ {True: 'GESPERRT', False: 'frei', None: 'unbrauchbar'}[locked] }",
+            print(f"Mikrofon ({reason}): Median {median:.2f} Spitze {peak} -> {urteil}",
                   flush=True)
+        state = load_state()
+        state["mic"] = {"median": round(median, 2), "peak": peak,
+                        "verdict": urteil, "when": int(time.time()),
+                        "reason": reason}
+        save_state(state)
         if locked is None:
             return False                       # lieber nichts sagen als falsch
         if locked != self.mic_locked:
             self.mic_locked = locked
             self.mic_image.set_visible(locked)
+            # Immer melden, auch ohne -v: ohne diese Zeile im Journal war nicht
+            # zu sehen, ob eine Messung ueberhaupt stattgefunden hat.
+            print(f"Mikrofon: {urteil} (Median {median:.2f}, Anlass: {reason})", flush=True)
         return False
 
     def watch_wakeups(self):
@@ -425,10 +704,22 @@ def main():
                                      parents=[common])
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("run", parents=[common], help="Symbol anzeigen (Vorgabe)")
-    sub.add_parser("status", parents=[common],
-                   help="Schalterstellung ausgeben und beenden")
+    st = sub.add_parser("status", parents=[common],
+                        help="Schalterstellung ausgeben und beenden")
+    st.add_argument("--json", action="store_true",
+                    help="alles als JSON, fuer die Oberflaeche")
     sub.add_parser("mic-check", parents=[common],
                    help="Mikrofon einmal messen (oeffnet kurz das Mikrofon)")
+    cam = sub.add_parser("cameras", parents=[common],
+                         help="zeigen, welche Kameras der Schalter betrifft")
+    cam.add_argument("--refresh", action="store_true",
+                     help="Liste neu von der Android-Seite holen (braucht root)")
+    cfg = sub.add_parser("config", parents=[common],
+                         help="einstellen, was der Netzschalter zusaetzlich abschaltet")
+    cfg.add_argument("radio", nargs="?", choices=sorted(RADIOS),
+                     help="wifi oder bluetooth")
+    cfg.add_argument("value", nargs="?", choices=("on", "off"),
+                     help="on = mit abschalten, off = unberuehrt lassen")
     args = parser.parse_args()
     args.verbose = getattr(args, "verbose", False)
     args.no_mic = getattr(args, "no_mic", False)
@@ -442,6 +733,10 @@ def main():
         return cmd_status(args)
     if args.command == "mic-check":
         return cmd_mic_check(args)
+    if args.command == "cameras":
+        return cmd_cameras(args)
+    if args.command == "config":
+        return cmd_config(args)
     return cmd_run(args)
 
 
