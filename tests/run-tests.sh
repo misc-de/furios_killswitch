@@ -102,16 +102,16 @@ print({True: "gesperrt", False: "frei", None: "unbrauchbar"}[r])
 PYEOF
 }
 falsch=0
-for wert in 2.84 2.85 2.89 2.93 3.14; do
+for wert in 2.84 2.85 2.89 2.93 3.14 3.18; do
     [ "$(mic_urteil $wert)" = "gesperrt" ] || falsch=$((falsch+1))
 done
-check "5 gemessene gesperrt-Werte richtig eingestuft" "0" "$falsch"
+check "6 gemessene gesperrt-Werte richtig eingestuft" "0" "$falsch"
 
 falsch=0
-for wert in 8.72 25.71 25.77 28.85 50.94; do
+for wert in 6.88 8.72 25.71 25.77 28.85 50.94; do
     [ "$(mic_urteil $wert)" = "frei" ] || falsch=$((falsch+1))
 done
-check "5 gemessene frei-Werte richtig eingestuft" "0" "$falsch"
+check "6 gemessene frei-Werte richtig eingestuft" "0" "$falsch"
 
 # Digitale Stille ist ein Messfehler, kein gekapptes Kabel.
 check "digitale Stille gilt als unbrauchbar" "unbrauchbar" "$(mic_urteil 0.0)"

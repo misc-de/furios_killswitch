@@ -209,6 +209,20 @@ Sperren, und `reason: "LockedHint, nachgeholt"`, wenn die Abkuehlzeit von 20 s
 noch laeuft -- ein Anlass waehrend der Abkuehlzeit wird verschoben, nie
 verworfen.
 
+**Ende zu Ende bestaetigt** (14.9. 17:10, mit der Hand am Schalter): Mikro
+gesperrt, Telefon gesperrt -- `Mikrofon: GESPERRT (Median 3.18, Anlass:
+IdleHint)`, Symbol in der Leiste sichtbar. Schalter zurueck, naechster Anlass
+`Mikrofon: frei (Median 6.88, Anlass: LockedHint, nachgeholt)`, Symbol weg.
+Beide Schluessel feuern also, `IdleHint` und `LockedHint` -- und `IdleHint`
+kommt zuerst, weil der Bildschirm ausgeht, bevor die Sperre greift.
+
+**Der Abstand zur Schwelle ist kleiner als gedacht.** 6,88 ist der bisher
+niedrigste gemessene frei-Wert (vorher 8,72) bei 3,18 als hoechstem
+gesperrt-Wert. Die Schwelle 4,5 liegt weiter richtig dazwischen, aber der
+Spielraum nach unten betraegt nur noch rund das Anderthalbfache -- in einem
+sehr stillen Raum ist das die Groesse, auf die zu achten ist. Beide Werte
+stehen jetzt in den Testreihen.
+
 **Merke:** ein GDBus-Abo lebt auf der Verbindung, nicht fuer sich. Wo die
 Schwesterdienste (`furios-audio-sco-hold`, `pause-on-disconnect`) es richtig
 machen, ist das Zufall der Bauform: dort laeuft die Hauptschleife im selben
