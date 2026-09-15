@@ -125,7 +125,10 @@ killswitch-indicator run --interval 10
 
 Das Symbol ist ein Layer-Shell-Fenster auf der Ebene `OVERLAY` mit leerer
 Eingaberegion -- es faengt also keine Beruehrung ab, insbesondere nicht die
-Wischgeste, die die Schnelleinstellungen oeffnet.
+Wischgeste, die die Schnelleinstellungen oeffnet. Die Region wird beim
+Zeichnen gesetzt und nicht beim `realize`: von dort aus kommt sie nicht beim
+Compositor an, und der Streifen liegt ueber der ganzen Breite der Leiste.
+Siehe [FINDINGS.md](FINDINGS.md).
 
 Im Sperrbildschirm ist es ebenfalls zu sehen, an derselben Stelle und ohne
 etwas zu verdecken: man erkennt also ohne Entsperren, dass ein Schalter

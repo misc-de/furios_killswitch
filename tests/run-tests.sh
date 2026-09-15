@@ -178,6 +178,20 @@ check "altes Messurteil wird beim Start vergessen" "0" \
 check "mic-check gibt es weiterhin" "ja" \
     "$("$PROG" --help | grep -q 'mic-check' && echo ja || echo nein)"
 
+# 38-40: Die leere Eingaberegion, und der eine Ort, an dem sie ankommt.
+# Aus "realize" gesetzt tut sie NICHTS: gtk-layer-shell tauscht die Flaeche
+# zwischen realize und map gegen eine Layer-Flaeche aus, und GDK schickt die
+# Region nur waehrend des Zeichnens zum Compositor. Am 15.09.2026 mit
+# WAYLAND_DEBUG=1 am Geraet nachgemessen -- der Streifen ging mit
+# set_input_region(nil) hoch und schluckte die Wischgeste zu den
+# Schnelleinstellungen ueber die ganze Breite der Leiste.
+check "Eingaberegion nicht aus realize" "0" \
+    "$(grep -c 'connect("realize"' "$PROG")"
+check "Eingaberegion beim Zeichnen" "1" \
+    "$(grep -c 'def on_draw' "$PROG")"
+check "leere Region, nichts anderes" "1" \
+    "$(grep -c 'input_shape_combine_region(self.cairo.Region(), 0, 0)' "$PROG")"
+
 echo
 echo "$pass bestanden, $fail durchgefallen"
 [ "$fail" -eq 0 ]

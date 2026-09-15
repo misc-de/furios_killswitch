@@ -163,9 +163,28 @@ meldet eine korrekte Groesse und Position -- und ist trotzdem unsichtbar, weil
 phoshs eigene Leiste ebenfalls auf `TOP` liegt und darueber gezeichnet wird.
 Erst `OVERLAY` macht das Symbol sichtbar.
 
-**Leere Eingaberegion nicht vergessen.** Ohne
-`input_shape_combine_region(cairo.Region(), 0, 0)` schluckt der Streifen genau
-die Wischgeste, mit der man die Schnelleinstellungen oeffnet.
+**Leere Eingaberegion nicht vergessen -- und sie kommt nur beim Zeichnen an.**
+Ohne `input_shape_combine_region(cairo.Region(), 0, 0)` schluckt der Streifen
+genau die Wischgeste, mit der man die Schnelleinstellungen oeffnet. Er ist an
+TOP, LEFT *und* RIGHT verankert, liegt also ueber der ganzen Breite der Leiste
+-- misslingt das, kommt man an die Knoepfe gar nicht mehr heran.
+
+Und aus `realize` gesetzt misslingt es. Am 15.09.2026 mit `WAYLAND_DEBUG=1` am
+Geraet mitgelesen: der Streifen ging mit `wl_surface.set_input_region(nil)`
+hoch, und `nil` heisst in Wayland "ich nehme ueberall Beruehrung an" -- das
+genaue Gegenteil. Zwei Gruende, von denen jeder allein genuegt:
+
+- Die Flaeche, auf die bei `realize` gesetzt wird, ist nicht die, mit der das
+  Fenster endet: gtk-layer-shell tauscht sie vor dem Mappen gegen eine
+  Layer-Flaeche.
+- GDK schickt die Region ueberhaupt nur zum Compositor, waehrend es zeichnet
+  (`gdk_wayland_window_sync_input_region` haengt am Malen). Ein Aufruf zu jedem
+  anderen Zeitpunkt landet in einem Feld, das niemand absendet -- im Mitschnitt
+  erscheint dann gar kein `set_input_region`.
+
+Aus dem `draw`-Handler kommt derselbe Aufruf als das an, was er sein soll:
+`create_region`, **kein** `add`, `set_input_region(wl_region)`. Der Mitschnitt
+ist der Pruefstein, nicht der Quelltext -- der sah zwei Tage lang richtig aus.
 
 **Exklusivzone -1.** Mit 0 wird das Fenster unter die Leiste geschoben, die
 selbst eine Zone reserviert.
@@ -176,7 +195,10 @@ Symbole stehen dort an derselben Stelle wie im entsperrten Zustand, ordentlich
 in der Leiste neben Signal, Akku und Prozentanzeige; Uhr, Datum und der Hinweis
 zum Entsperren bleiben unberuehrt. Das ist sogar das gewuenschte Verhalten --
 man sieht ohne Entsperren, dass ein Schalter gesperrt ist. Die leere
-Eingaberegion sorgt dafuer, dass die Wischgeste zum Entsperren durchkommt.
+Eingaberegion sorgt dafuer, dass die Wischgeste zum Entsperren durchkommt --
+allerdings erst seit dem 15.09.: was am 14.09. geprueft wurde, war das Bild,
+nicht die Geste. Bis dahin lag der Streifen ueber der ganzen Breite und nahm
+jede Beruehrung an, auf dem Sperrbildschirm wie darueber.
 
 **Screenshots hinken.** `org.gnome.Shell.Screenshot` liefert den zuletzt
 gerenderten Frame. Aendert sich am Bildschirm sonst nichts, zeigt ein

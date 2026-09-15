@@ -438,6 +438,9 @@ class Indicator:
         self.verbose = verbose
         self.interval = interval
         self.state = {}
+        # Whether the compositor has been told that this strip takes no touch.
+        # False until a draw has actually pushed it - see on_draw.
+        self.input_region_set = False
 
         self.win = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
         self.win.set_app_paintable(True)
@@ -483,22 +486,58 @@ class Indicator:
         # No third icon: the microphone switch is not read here, by choice --
         # see the note at the top.
 
-        self.win.connect("realize", self.on_realize)
+        # Not "realize" - see on_draw. The window is anchored across the
+        # whole width of the top bar, so getting this wrong takes the swipe
+        # to the quick settings with it.
+        self.win.connect("draw", self.on_draw)
+        self.win.connect("map-event", self.on_map_event)
+        self.win.connect("size-allocate", self.on_size_allocate)
         self.win.connect("destroy", Gtk.main_quit)
         self.win.show_all()
         self.refresh(initial=True)
         self.watch()
         self.forget_stale_mic_state()
 
-    def on_realize(self, _widget):
+    def on_draw(self, _widget, _cr):
         """Let every touch through: an empty input region.
 
-        Without this the strip would swallow the swipe that opens phosh's
-        quick settings, right where people reach for it.
+        Without this the strip swallows the swipe that opens phosh's quick
+        settings, right where people reach for it - the window is anchored
+        left AND right, so it lies across the whole top bar.
+
+        From `realize`, where this used to sit, it did nothing at all. Traced
+        on the device with WAYLAND_DEBUG=1 on 15.09.2026: the strip went up
+        with `wl_surface.set_input_region(nil)`, and nil is Wayland for "all
+        of me takes input". Two reasons, and either one is enough - the
+        surface a region is set on at realize time is not the one the window
+        ends up with (gtk-layer-shell swaps it for a layer surface before the
+        window maps), and GDK pushes the region to the compositor only while
+        it paints, so a call at any other moment sits in a field nobody
+        sends. Set from here, the same call arrives as an empty wl_region -
+        `create_region`, no `add`, `set_input_region` - which is the strip
+        saying it wants no touch at all.
+
+        Once per surface, not per frame: re-armed by whatever can lose it.
         """
-        gdk_window = self.win.get_window()
-        if gdk_window is not None:
-            gdk_window.input_shape_combine_region(self.cairo.Region(), 0, 0)
+        if not self.input_region_set:
+            gdk_window = self.win.get_window()
+            if gdk_window is not None:
+                gdk_window.input_shape_combine_region(self.cairo.Region(), 0, 0)
+                self.input_region_set = True
+                if self.verbose:
+                    print("Eingaberegion geleert - der Streifen nimmt keine "
+                          "Beruehrung an", flush=True)
+        return False
+
+    def on_map_event(self, _widget, _event):
+        """A new surface may carry no region of ours; the next draw sets it."""
+        self.input_region_set = False
+        return False
+
+    def on_size_allocate(self, _widget, _allocation):
+        """The strip changes width when an icon comes or goes. The region is
+        empty either way, but it costs one commit to be sure of it."""
+        self.input_region_set = False
 
     def refresh(self, initial=False):
         for name, _icon, label in SWITCHES:
