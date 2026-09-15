@@ -139,4 +139,7 @@ Umlegen eines Schalters tatsaechlich passiert: siehe [FINDINGS.md](FINDINGS.md).
 
 ## Lizenz
 
-MIT, siehe [LICENSE](LICENSE).
+MIT, siehe [LICENSE](LICENSE) - eigener Code, nichts davon gepatcht oder
+ersetzt. Was zur Laufzeit dazukommt (GTK 3, gtk-layer-shell, cairo, die
+Adwaita-Symbole) und woher der Schalterzustand kommt, steht mit Lizenz in
+[NOTICE](NOTICE).

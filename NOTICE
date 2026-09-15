@@ -2,6 +2,8 @@ Dieses Projekt enthaelt ausschliesslich eigenen Code (MIT, siehe LICENSE).
 
 Es verwendet zur Laufzeit:
   - GTK 3 und gtk-layer-shell (LGPL-2.1+), ueber GObject-Introspection
+  - GLib und Gio (LGPL-2.1+), aus derselben Quelle
+  - pycairo / cairo (LGPL-2.1 bzw. MPL-1.1), zum Zeichnen des Streifens
   - Symbole aus dem Adwaita-Icon-Theme (CC-BY-SA 3.0 / LGPL-3):
       camera-disabled-symbolic, network-cellular-disabled-symbolic
 
