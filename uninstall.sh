@@ -8,4 +8,4 @@ rm -f "$HOME/.local/bin/killswitch-indicator"
 rm -f "$HOME/.config/systemd/user/killswitch-indicator.service"
 rm -rf "$HOME/.local/share/doc/killswitch-indicator"
 systemctl --user daemon-reload
-echo "Entfernt."
+echo "Removed."

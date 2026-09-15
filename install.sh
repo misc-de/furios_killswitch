@@ -8,16 +8,16 @@
 set -euo pipefail
 
 if [ "$(id -u)" = 0 ]; then
-    echo "Bitte OHNE sudo ausfuehren - das Programm laeuft in der Nutzersitzung." >&2
+    echo "Please run WITHOUT sudo - the program runs in the user session." >&2
     exit 1
 fi
 
-# Was das Symbol zum Leben braucht. Geprueft, BEVOR etwas installiert wird:
-# ohne GtkLayerShell startet der Dienst zwar, zeichnet aber nie etwas - und
-# ein Programm, das sauber installiert wurde und stumm nichts tut, ist
-# schwerer zu verstehen als eines, das gar nicht erst einzieht. Auf FuriOS
-# bringt phosh diese Pakete selbst mit, hier feuert das also nie; auf einem
-# Telefon ohne sie ist der fehlende Name die ganze Auskunft.
+# What the icon needs to come alive. Checked BEFORE anything is installed:
+# without GtkLayerShell the service does start but never draws anything - and
+# a program that installed cleanly and then silently does nothing is harder to
+# understand than one that never moves in. On FuriOS phosh brings these
+# packages along itself, so this never fires here; on a phone without them the
+# missing name is the whole answer.
 if ! python3 - <<'PRUEFUNG' 2>/dev/null
 import gi
 gi.require_version("Gtk", "3.0")
@@ -25,8 +25,8 @@ gi.require_version("GtkLayerShell", "0.1")
 from gi.repository import Gtk, GtkLayerShell  # noqa: F401
 PRUEFUNG
 then
-    echo "Fehlt: python3-gi, gir1.2-gtk-3.0 oder gir1.2-gtklayershell-0.1." >&2
-    echo "Ohne die zeichnet das Symbol nichts - nichts wurde installiert." >&2
+    echo "Missing: python3-gi, gir1.2-gtk-3.0 or gir1.2-gtklayershell-0.1." >&2
+    echo "Without them the icon draws nothing - nothing was installed." >&2
     exit 1
 fi
 
@@ -42,12 +42,12 @@ install -m 0644 "$SRC/README.md" "$SRC/FINDINGS.md" "$DOC/"
 
 systemctl --user daemon-reload
 systemctl --user enable killswitch-indicator.service
-# restart, nicht nur start: bei einer Neuinstallation laeuft der Dienst schon
-# und wuerde sonst mit der alten Fassung weiterlaufen.
+# restart, not just start: on a reinstall the service is already running and
+# would otherwise carry on with the old version.
 systemctl --user restart killswitch-indicator.service
 
 echo
-echo "Installiert. Zustand:"
+echo "Installed. State:"
 "$BIN/killswitch-indicator" status || true
 echo
 systemctl --user --no-pager --lines=0 status killswitch-indicator.service | head -4

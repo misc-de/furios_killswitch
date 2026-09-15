@@ -1,14 +1,14 @@
-Dieses Projekt enthaelt ausschliesslich eigenen Code (MIT, siehe LICENSE).
+This project contains only code of our own (MIT, see LICENSE).
 
-Es verwendet zur Laufzeit:
-  - GTK 3 und gtk-layer-shell (LGPL-2.1+), ueber GObject-Introspection
-  - GLib und Gio (LGPL-2.1+), aus derselben Quelle
-  - pycairo / cairo (LGPL-2.1 bzw. MPL-1.1), zum Zeichnen des Streifens
-  - Symbole aus dem Adwaita-Icon-Theme (CC-BY-SA 3.0 / LGPL-3):
+At runtime it uses:
+  - GTK 3 and gtk-layer-shell (LGPL-2.1+), through GObject Introspection
+  - GLib and Gio (LGPL-2.1+), from the same source
+  - pycairo / cairo (LGPL-2.1 and MPL-1.1), for drawing the strip
+  - icons from the Adwaita icon theme (CC-BY-SA 3.0 / LGPL-3):
       camera-disabled-symbolic, network-cellular-disabled-symbolic
 
-Es liest, ohne sie zu veraendern:
-  - /sys/devices/platform/custom-keys/{cam_switch,nwk_switch}, bereitgestellt
-    vom FuriLabs-Kernel-Treiber `custom_keys`
+It reads, without changing them:
+  - /sys/devices/platform/custom-keys/{cam_switch,nwk_switch}, provided by the
+    FuriLabs kernel driver `custom_keys`
 
-Kein Bestandteil von FuriOS wird gepatcht oder ersetzt.
+No part of FuriOS is patched or replaced.

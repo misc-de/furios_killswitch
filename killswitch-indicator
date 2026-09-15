@@ -365,15 +365,15 @@ def camera_hal_running():
 def cmd_cameras(args):
     cams = list_cameras(refresh=getattr(args, "refresh", False))
     if cams is None:
-        print("Kameraliste noch nicht bekannt. Einmalig mit root abfragen:")
+        print("Camera list not known yet. Fetch it once as root:")
         print("  sudo killswitch-indicator cameras --refresh")
         return 1
-    print(f"{len(cams)} Kameras, alle vom Schalter betroffen:")
+    print(f"{len(cams)} cameras, all of them affected by the switch:")
     for index, facing in enumerate(cams):
         seite = {"Back": "Rueckseite", "Front": "Vorderseite"}.get(facing, facing)
         print(f"  Kamera {index}: {seite}")
-    print("Der Schalter stoppt camerahalserver - das gilt immer fuer alle "
-          "Kameras zugleich, einzeln geht nicht.")
+    print("The switch stops camerahalserver - that always applies to all "
+          "cameras at once, one alone is not possible.")
     return 0
 
 
@@ -381,15 +381,15 @@ def cmd_config(args):
     config = load_config()
     if args.radio is None:
         for radio, (label, *_rest) in RADIOS.items():
-            print(f"{radio:10s} {'ja' if config_enabled(config, radio) else 'nein':5s}"
+            print(f"{radio:10s} {'yes' if config_enabled(config, radio) else 'no':5s}"
                   f"  # {label} beim Netzschalter mit abschalten")
         return 0
     if args.value is None:
-        print("ja" if config_enabled(config, args.radio) else "nein")
+        print("yes" if config_enabled(config, args.radio) else "no")
         return 0
     config.set("network", args.radio, "yes" if args.value == "on" else "no")
     save_config(config)
-    print(f"{args.radio}: {'ja' if args.value == 'on' else 'nein'}")
+    print(f"{args.radio}: {'yes' if args.value == 'on' else 'no'}")
     return 0
 
 
@@ -412,10 +412,10 @@ def cmd_status(args):
     for name, _, label in SWITCHES:
         value = read_switch(name)
         if value is None:
-            print(f"{name}: nicht lesbar ({os.path.join(BASE, name)})")
+            print(f"{name}: not readable ({os.path.join(BASE, name)})")
             missing = True
         else:
-            print(f"{name}: {'GESPERRT' if value == ENGAGED else 'frei'} (sysfs={value})  # {label}")
+            print(f"{name}: {'ENGAGED' if value == ENGAGED else 'free'} (sysfs={value})  # {label}")
     return 1 if missing else 0
 
 
@@ -525,7 +525,7 @@ class Indicator:
                 gdk_window.input_shape_combine_region(self.cairo.Region(), 0, 0)
                 self.input_region_set = True
                 if self.verbose:
-                    print("Eingaberegion geleert - der Streifen nimmt keine "
+                    print("input region emptied - the strip accepts no "
                           "Beruehrung an", flush=True)
         return False
 
@@ -547,15 +547,15 @@ class Indicator:
                 self.state[name] = locked
                 self.icons[name].set_visible(locked)
                 if not initial:
-                    print(f"{name}: {'GESPERRT' if locked else 'frei'}", flush=True)
+                    print(f"{name}: {'ENGAGED' if locked else 'free'}", flush=True)
                     if name == "nwk_switch":
-                        # Im Thread: die D-Bus-Aufrufe koennen Sekunden dauern,
-                        # und die Leiste darf dabei nicht stehenbleiben.
+                        # In a thread: the D-Bus calls can take seconds, and
+                        # the bar must not stand still while they do.
                         threading.Thread(
                             target=apply_network_extras,
                             args=(locked, self.verbose), daemon=True).start()
                 elif self.verbose:
-                    print(f"{name}: {'GESPERRT' if locked else 'frei'}", flush=True)
+                    print(f"{name}: {'ENGAGED' if locked else 'free'}", flush=True)
         return True
 
     def watch(self):
@@ -594,7 +594,7 @@ class Indicator:
         os.lseek(fd, 0, os.SEEK_SET)
         os.read(fd, 32)                          # re-arm, else we spin
         if self.verbose:
-            print(f"{name}: sysfs hat die Aenderung selbst gemeldet", flush=True)
+            print(f"{name}: sysfs reported the change by itself", flush=True)
         self.refresh()
         return True
 
@@ -612,13 +612,13 @@ def cmd_mic_check(_args):
         return 1
     median, peak = result
     locked = classify_microphone(median)
-    print(f"Median-RMS {median:.2f}  Spitze {peak}")
-    print("Mikrofon: " + {True: "GESPERRT", False: "frei",
+    print(f"median RMS {median:.2f}  peak {peak}")
+    print("Microphone: " + {True: "ENGAGED", False: "free",
                           None: "Messung unbrauchbar"}[locked])
-    print(f"(Schwelle: Median < {MIC_MAX_MEDIAN} gilt als gesperrt; "
+    print(f"(threshold: median < {MIC_MAX_MEDIAN} counts as engaged; "
           f"unter {MIC_MIN_MEDIAN} als Fehlmessung)")
-    print("Gilt nur fuer diese drei Sekunden: der Schalter meldet sich "
-          "nirgends an, es gibt kein Symbol dafuer.")
+    print("Holds only for these three seconds: the switch announces itself "
+          "nowhere, and there is no icon for it.")
     return 0 if locked is not None else 1
 
 
@@ -641,26 +641,26 @@ def main():
                         help="jede Zustandsaenderung nach stdout melden")
     common.add_argument("--interval", type=int, default=argparse.SUPPRESS,
                         metavar="SEK",
-                        help=f"Abstand der Pruefungen in Sekunden "
+                        help=f"seconds between checks "
                              f"(Vorgabe {DEFAULT_INTERVAL_S}); hoehere Werte "
-                             f"lassen das Symbol entsprechend spaeter erscheinen")
+                             f"make the icon appear correspondingly later")
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0],
                                      parents=[common])
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("run", parents=[common], help="Symbol anzeigen (Vorgabe)")
     st = sub.add_parser("status", parents=[common],
-                        help="Schalterstellung ausgeben und beenden")
+                        help="print the switch positions and exit")
     st.add_argument("--json", action="store_true",
-                    help="alles als JSON, fuer die Oberflaeche")
+                    help="everything as JSON, for the interface")
     sub.add_parser("mic-check", parents=[common],
-                   help="Mikrofon einmal von Hand messen (oeffnet es kurz dafuer); "
-                        "der Dienst selbst misst nie")
+                   help="measure the microphone once by hand (opens it briefly); "
+                        "the service itself never measures")
     cam = sub.add_parser("cameras", parents=[common],
-                         help="zeigen, welche Kameras der Schalter betrifft")
+                         help="show which cameras the switch affects")
     cam.add_argument("--refresh", action="store_true",
-                     help="Liste neu von der Android-Seite holen (braucht root)")
+                     help="fetch the list from the Android side again (needs root)")
     cfg = sub.add_parser("config", parents=[common],
-                         help="einstellen, was der Netzschalter zusaetzlich abschaltet")
+                         help="set what the network switch switches off as well")
     cfg.add_argument("radio", nargs="?", choices=sorted(RADIOS),
                      help="wifi oder bluetooth")
     cfg.add_argument("value", nargs="?", choices=("on", "off"),

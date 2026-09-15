@@ -1,30 +1,30 @@
-# Befunde: die drei Schalter des FuriPhone FLX1
+# Findings: the three switches of the FuriPhone FLX1
 
-Aufgenommen am 14.09.2026 auf `radon` (FuriOS 14.0, Kernel 4.19.325). Alles
-hier ist am Geraet gemessen, nicht aus Dokumentation uebernommen.
+Recorded on 14.09.2026 on `radon` (FuriOS 14.0, kernel 4.19.325). Everything
+here was measured on the device, not taken from documentation.
 
-## Die drei Eingaben
+## The three inputs
 
-| Schalter | Quelle | Keycode | Eingabegeraet |
+| Switch | Source | Keycode | Input device |
 |---|---|---|---|
-| Kamera-Schieber | GPIO 51, Treiber `custom_keys` | 212 (`KEY_CAMERA`) | `/dev/input/event1` |
-| Netzwerk-Schieber | GPIO 52, Treiber `custom_keys` | 60 (`KEY_F2`) | `/dev/input/event1` |
-| Assistant-Taste | `mtk-kpd` | 112 (`KEY_MACRO`) | `/dev/input/event2` |
+| Camera slider | GPIO 51, driver `custom_keys` | 212 (`KEY_CAMERA`) | `/dev/input/event1` |
+| Network slider | GPIO 52, driver `custom_keys` | 60 (`KEY_F2`) | `/dev/input/event1` |
+| Assistant button | `mtk-kpd` | 112 (`KEY_MACRO`) | `/dev/input/event2` |
 
-Devicetree-Knoten `custom-keys`, Unterknoten `key0`/`key1`, je 50 ms
-Entprellung und `wakeup-source`. Beim Boot:
+Devicetree node `custom-keys`, subnodes `key0`/`key1`, 50 ms debounce each and
+`wakeup-source`. At boot:
 
 ```
 Boot GPIO 51 (cam_switch) initial state: 0 (pressed: 1)
 Boot GPIO 52 (nwk_switch) initial state: 0 (pressed: 1)
 ```
 
-## Die Killswitch-Logik liegt in Android, nicht in Linux
+## The kill switch logic lives in Android, not in Linux
 
-`vendor/etc/init/hw/init.project.rc` uebergibt die beiden sysfs-Attribute an
-`system:system`. Gelesen werden sie vom HAL
-`/vendor/bin/hw/vendor.mediatek.hardware.nvram@1.1-service`, dessen
-Stringtabelle genau die noetigen Bausteine enthaelt und sonst nichts:
+`vendor/etc/init/hw/init.project.rc` hands the two sysfs attributes to
+`system:system`. They are read by the HAL
+`/vendor/bin/hw/vendor.mediatek.hardware.nvram@1.1-service`, whose string
+table contains exactly the necessary pieces and nothing else:
 
 ```
 /sys/bus/platform/devices/custom-keys/{nwk,cam}_switch   /dev/input/event1
@@ -32,384 +32,373 @@ persist.vendor.radio.disabled    ctl.start / ctl.stop    vendor.ril-daemon-mtk
 persist.vendor.camera.disabled                           camerahalserver
 ```
 
-Gemessener Ablauf beim Umlegen des Kamera-Schalters (14.09., 15:53):
+Measured sequence when the camera switch is flipped (14.09., 15:53):
 
 ```
 15:53:38  cam_switch 1 -> 0        dmesg: "Key cam_switch (GPIO 51) ... pressed: 0"
-15:53:40  ~2,0 s spaeter: persist.vendor.camera.disabled = 1
+15:53:40  ~2.0 s later: persist.vendor.camera.disabled = 1
           init: Control message: Processed ctl.stop for 'camerahalserver'
                 from pid: 126 (.../vendor.mediatek.hardware.nvram@1.1-service)
-          init: Sending signal 9 to service 'camerahalserver'      PID 2234 weg
+          init: Sending signal 9 to service 'camerahalserver'      PID 2234 gone
 15:53:48  cam_switch 0 -> 1
-15:53:49  ~1,0 s spaeter: persist.vendor.camera.disabled = 0
+15:53:49  ~1.0 s later: persist.vendor.camera.disabled = 0
           init: Control message: Processed ctl.start for 'camerahalserver'
-          imgsensor_hw_power_sequence ...                          PID 11331 neu
+          imgsensor_hw_power_sequence ...                          PID 11331 new
 ```
 
-`vendor.ril-daemon-mtk` ist `/vendor/bin/hw/mtkfusionrild`.
+`vendor.ril-daemon-mtk` is `/vendor/bin/hw/mtkfusionrild`.
 
-### Es ist ein Software-Kill, kein Leitungstrenner
+### It is a software kill, not a cut line
 
-Im gesamten Umschaltfenster steht **keine** Kernel-Meldung ueber Regulatoren,
-Sensorstrom oder MCLK. Der GPIO trennt nichts, er meldet nur; die Kamera geht
-aus, weil Android den HAL mit Signal 9 beendet. Der Schalter ist damit so
-stark wie die Android-Init-Schicht darunter -- nicht staerker. Fuer das
-Vertrauensmodell ist das der Unterschied zu einem echten Hardware-Killswitch.
+Across the whole switching window there is **no** kernel message about
+regulators, sensor power or MCLK. The GPIO disconnects nothing, it only
+reports; the camera goes off because Android kills the HAL with signal 9. The
+switch is therefore exactly as strong as the Android init layer underneath it
+-- no stronger. For the trust model that is the difference to a real hardware
+kill switch.
 
-## Warum kein Linux-Programm die Tastencodes sieht
+## Why no Linux program sees the key codes
 
-Der NVRAM-HAL haelt `/dev/input/event1` exklusiv:
+The NVRAM HAL holds `/dev/input/event1` exclusively:
 
 ```
 nvram-HAL (PID 2137), fd 6 -> /dev/input/event1
-EVIOCGRAB abgelehnt: [Errno 16] Device or resource busy
+EVIOCGRAB refused: [Errno 16] Device or resource busy
 ```
 
-Ein eigener Leser auf `event1` sah waehrend eines kompletten Umschaltvorgangs
-null Ereignisse, obwohl der Treiber sie im Kernel-Log meldet. `KEY_CAMERA` und
-`KEY_F2` erreichen phoc, phosh oder eigene Programme also grundsaetzlich nie.
-Deshalb liest dieses Projekt sysfs und nicht das Eingabegeraet.
+A reader of our own on `event1` saw zero events across a complete switching
+sequence, although the driver reports them in the kernel log. `KEY_CAMERA` and
+`KEY_F2` therefore never reach phoc, phosh or any program of ours. That is why
+this project reads sysfs and not the input device.
 
-Ebenfalls geprueft und nicht vorhanden: ein rfkill-Geraet (`rfkill list` ist
-leer), eine udev-Regel auf die Codes, ein Auswerter im Userspace. `nmcli radio
-all` meldet unabhaengig von der Schalterstellung `WWAN-HW enabled`.
+Also checked and not present: an rfkill device (`rfkill list` is empty), a udev
+rule on the codes, an evaluator in userspace. `nmcli radio all` reports `WWAN-HW
+enabled` regardless of the switch position.
 
-## Das Prellen auf GPIO 52
+## The bouncing on GPIO 52
 
-Seit dem Boot stehen 113 `nwk_switch`-Ereignisse im Log, darunter 53 echte
-`pressed: 0`-Flanken -- ohne dass der Schalter je bewegt wurde; sie treten auf,
-wenn das Telefon in die Hand genommen wird. Trotzdem lief `mtkfusionrild`
-durchgehend seit dem Boot und `persist.vendor.radio.disabled` blieb 0. Der HAL
-laesst sich vom Prellen also nicht taeuschen. Fuer die Anzeige heisst das:
-sysfs lesen (Ruhezustand), nicht Flanken zaehlen.
+Since boot there are 113 `nwk_switch` events in the log, among them 53 real
+`pressed: 0` edges -- without the switch ever being moved; they happen when the
+phone is picked up. `mtkfusionrild` nevertheless ran continuously since boot and
+`persist.vendor.radio.disabled` stayed 0. So the HAL is not fooled by the
+bouncing. For the indicator that means: read sysfs (the resting state), do not
+count edges.
 
-## Der Treiber meldet Aenderungen nicht von selbst
+## The driver does not report changes by itself
 
-Gemessen am 14.09. mit zwei Threads auf `cam_switch`: einer wartete blockierend
-in `poll()` auf `POLLPRI`, der andere las den Wert alle 50 ms.
+Measured on 14.09. with two threads on `cam_switch`: one waited blocking in
+`poll()` for `POLLPRI`, the other read the value every 50 ms.
 
 ```
-Wertaenderung nach: 58.44s
-poll() meldete nach: NIE (Treiber ruft sysfs_notify nicht)
+value changed after: 58.44s
+poll() reported after: NEVER (the driver does not call sysfs_notify)
 ```
 
-Die Anzeige kann also nicht ereignisgesteuert arbeiten: das Pruefintervall ist
-unmittelbar die Verzoegerung, mit der das Symbol erscheint. Bei 2 s kostet das
-0,0154 % eines Kerns (65-s-Fenster), hochgerechnet 13,3 s CPU-Zeit pro Tag, bei
-54 MB RSS -- der Speicher von Python samt GTK 3 ist der groessere Posten, nicht
-die Rechenzeit. Laenger takten spart daran nichts Messbares und macht die
-Anzeige nur traeger.
+The indicator therefore cannot work event-driven: the polling interval is
+directly the delay with which the icon appears. At 2 s that costs 0.0154 % of a
+core (65 s window), extrapolated 13.3 s of CPU time per day, at 54 MB RSS --
+the memory of Python plus GTK 3 is the larger item, not the computation.
+Polling more slowly saves nothing measurable and only makes the indicator
+sluggish.
 
-## Der Mikrofon-Schalter: der einzige echte, und der unsichtbare
+## The microphone switch: the only real one, and the invisible one
 
-Am Geraet gibt es drei Schieber, aber nur zwei GPIOs. Der Mikrofon-Schalter
-taucht im System an **keiner** Stelle auf. Verglichen zwischen gesperrt und
-frei, jeweils ohne einen einzigen Unterschied:
+The device has three sliders but only two GPIOs. The microphone switch appears
+**nowhere** in the system. Compared between engaged and free, each time without
+a single difference:
 
-| Quelle | Umfang | Unterschied |
+| Source | Extent | Difference |
 |---|---|---|
-| GPIOs, Android-Properties, Eingabegeraete, Audioquellen | 448 Zeilen | 0 |
-| ALSA-Controls vollstaendig, /proc/asound, Jack-Zustaende | 1889 Zeilen | 0 |
+| GPIOs, Android properties, input devices, audio sources | 448 lines | 0 |
+| ALSA controls in full, /proc/asound, jack states | 1889 lines | 0 |
 
-Das ist kein Versaeumnis der Firmware, sondern die Natur der Sache: ein
-eingebautes Mikrofon ist kein Geraet, das sich an- und abmeldet, sondern eine
-analoge Leitung an einen Codec-Eingang. Anwesenheitserkennung gibt es nur fuer
-die Klinkenbuchse -- dafuer ist ACCDET da, das dort die Impedanz misst. Die
-Codec-Register des PMIC waeren die letzte denkbare Stelle, taugen aber nicht:
-sie aendern sich im Ruhezustand von allein um 1634 Zeilen in zwei Sekunden.
+This is not an omission of the firmware but the nature of the thing: a built-in
+microphone is not a device that registers and deregisters, it is an analogue
+line to a codec input. Presence detection exists only for the headphone jack --
+that is what ACCDET is for, measuring the impedance there. The codec registers
+of the PMIC would be the last conceivable place, but they are no good: at rest
+they change by themselves, 1634 lines in two seconds.
 
-Waehrend Kamera- und Netzschalter nur einen Android-Dienst abschiessen, trennt
-dieser hier tatsaechlich: der Pegel faellt um 37,8 dB, aber nicht auf digitale
-Stille (91,9 % der Abtastwerte ungleich null) -- der Wandler laeuft weiter und
-liefert sein Eigenrauschen, vor ihm kommt nichts mehr an.
+While the camera and network switches only shoot down an Android service, this
+one really does disconnect: the level drops by 37.8 dB, but not to digital
+silence (91.9 % of the samples are non-zero) -- the converter keeps running and
+delivers its own noise, and nothing arrives in front of it any more.
 
-### Wie der Zustand erkannt werden koennte -- und warum nicht mehr
+### How the state could be detected -- and why it no longer is
 
-Alles in diesem Abschnitt ist gemessen und gilt weiter; es traegt seit dem
-14.9.2026 nur noch `mic-check` von Hand. Der Dienst misst **nicht** mehr, es
-gibt **kein** drittes Symbol. Die Begruendung steht unten unter "Entschieden".
+Everything in this section was measured and still holds; since 14.9.2026 only
+`mic-check` carries it out, by hand. The service does **not** measure any more,
+there is **no** third icon. The reasoning is below under "Decided".
 
-Drei Sekunden aufnehmen, die ersten 0,7 s Anlauf verwerfen, RMS je 200-ms-Block,
-davon den **Median**. Gemessen, 5 Laeufe je Zustand:
+Record three seconds, discard the first 0.7 s of run-up, RMS per 200 ms block,
+and of those the **median**. Measured, 5 runs per state:
 
 ```
-gesperrt   2.84  2.85  2.89  2.93  3.14
-frei       8.72  25.71 25.77 28.85 50.94
+engaged   2.84  2.85  2.89  2.93  3.14
+free      8.72  25.71 25.77 28.85 50.94
 ```
 
-Zwei naheliegendere Kriterien wurden an diesen Daten verworfen:
+Two more obvious criteria were rejected against this data:
 
-- **Pegel (mittlerer RMS)**: ein einzelner Klick zieht ihn weg; ein gesperrter
-  Lauf las 6.92 bei Spitze 107.
-- **Schwankung**: wirkte zuerst ueberzeugend (gesperrt 3-5 %, frei 89-121 %),
-  aber ein Lauf im stillen Raum mit LEBENDEM Mikrofon kam auf 13,8 % und waere
-  als gesperrt gemeldet worden. Das ist der eine Fehler, der nicht passieren
-  darf.
+- **Level (mean RMS)**: a single click drags it away; an engaged run read 6.92
+  at a peak of 107.
+- **Variation**: convincing at first (engaged 3-5 %, free 89-121 %), but a run
+  in a quiet room with a LIVE microphone came to 13.8 % and would have been
+  reported as engaged. That is the one mistake that must not happen.
 
-Der Median ist gegen einzelne gestoerte Bloecke immun, und das Grundrauschen des
-Wandlers ist ueber Laeufe hinweg bemerkenswert stabil. Schwelle 4,5 -- zwischen
-den Gruppen, naeher an "gesperrt", damit im Zweifel "frei" herauskommt. Ein
-Median unter 0,5 gilt als Fehlmessung: ein Stream, der digitale Stille
-ausliefert, darf nie als gekappte Leitung gelesen werden.
+The median is immune to individual disturbed blocks, and the noise floor of the
+converter is remarkably stable across runs. Threshold 4.5 -- between the groups,
+closer to "engaged", so that in doubt the answer is "free". A median below 0.5
+counts as a failed measurement: a stream delivering digital silence must never
+be read as a cut line.
 
-Gemessen wurde nur beim Start und auf ein logind-Signal hin (Ende des
-Leerlaufs, Entsperren); dauerndes Messen hiesse dauerndes Oeffnen des
-Mikrofons. Dieser Anlass-Mechanismus ist entfernt -- siehe "Entschieden".
+Measurements were taken only at start and on a logind signal (end of idle,
+unlocking); measuring continuously would mean opening the microphone
+continuously. That occasion mechanism has been removed -- see "Decided".
 
-## Fallen beim Bauen der Anzeige
+## Traps while building the indicator
 
-**Layer `TOP` genuegt nicht.** Ein Layer-Shell-Fenster auf `TOP` wird gemappt,
-meldet eine korrekte Groesse und Position -- und ist trotzdem unsichtbar, weil
-phoshs eigene Leiste ebenfalls auf `TOP` liegt und darueber gezeichnet wird.
-Erst `OVERLAY` macht das Symbol sichtbar.
+**Layer `TOP` is not enough.** A layer-shell window on `TOP` is mapped, reports
+a correct size and position -- and is invisible all the same, because phosh's
+own bar is on `TOP` as well and is drawn over it. Only `OVERLAY` makes the icon
+visible.
 
-**Leere Eingaberegion nicht vergessen -- und sie kommt nur beim Zeichnen an.**
-Ohne `input_shape_combine_region(cairo.Region(), 0, 0)` schluckt der Streifen
-genau die Wischgeste, mit der man die Schnelleinstellungen oeffnet. Er ist an
-TOP, LEFT *und* RIGHT verankert, liegt also ueber der ganzen Breite der Leiste
--- misslingt das, kommt man an die Knoepfe gar nicht mehr heran.
+**Do not forget the empty input region -- and it only arrives while drawing.**
+Without `input_shape_combine_region(cairo.Region(), 0, 0)` the strip swallows
+exactly the swipe that opens the quick settings. It is anchored to TOP, LEFT
+*and* RIGHT, so it lies across the whole width of the bar -- get this wrong and
+the buttons cannot be reached at all.
 
-Und aus `realize` gesetzt misslingt es. Am 15.09.2026 mit `WAYLAND_DEBUG=1` am
-Geraet mitgelesen: der Streifen ging mit `wl_surface.set_input_region(nil)`
-hoch, und `nil` heisst in Wayland "ich nehme ueberall Beruehrung an" -- das
-genaue Gegenteil. Zwei Gruende, von denen jeder allein genuegt:
+And set from `realize` it does go wrong. Read along on the device on 15.09.2026
+with `WAYLAND_DEBUG=1`: the strip went up with `wl_surface.set_input_region(nil)`,
+and in Wayland `nil` means "I accept touch everywhere" -- the exact opposite.
+Two reasons, either of which is enough on its own:
 
-- Die Flaeche, auf die bei `realize` gesetzt wird, ist nicht die, mit der das
-  Fenster endet: gtk-layer-shell tauscht sie vor dem Mappen gegen eine
-  Layer-Flaeche.
-- GDK schickt die Region ueberhaupt nur zum Compositor, waehrend es zeichnet
-  (`gdk_wayland_window_sync_input_region` haengt am Malen). Ein Aufruf zu jedem
-  anderen Zeitpunkt landet in einem Feld, das niemand absendet -- im Mitschnitt
-  erscheint dann gar kein `set_input_region`.
+- The surface set on at `realize` is not the one the window ends up with:
+  gtk-layer-shell swaps it for a layer surface before mapping.
+- GDK only ever sends the region to the compositor while it draws
+  (`gdk_wayland_window_sync_input_region` hangs off painting). A call at any
+  other moment lands in a field nobody sends -- and then no `set_input_region`
+  appears in the trace at all.
 
-Aus dem `draw`-Handler kommt derselbe Aufruf als das an, was er sein soll:
-`create_region`, **kein** `add`, `set_input_region(wl_region)`. Der Mitschnitt
-ist der Pruefstein, nicht der Quelltext -- der sah zwei Tage lang richtig aus.
+From the `draw` handler the same call arrives as what it is meant to be:
+`create_region`, **no** `add`, `set_input_region(wl_region)`. The trace is the
+touchstone, not the source -- that looked right for two days.
 
-**Exklusivzone -1.** Mit 0 wird das Fenster unter die Leiste geschoben, die
-selbst eine Zone reserviert.
+**Exclusive zone -1.** With 0 the window is pushed under the bar, which
+reserves a zone of its own.
 
-**Sperrbildschirm: geprueft, unkritisch.** `OVERLAY` ist auch die Ebene von
-phoshs Sperrbildschirm. Am 14.09. mit `loginctl lock-session` getestet: die
-Symbole stehen dort an derselben Stelle wie im entsperrten Zustand, ordentlich
-in der Leiste neben Signal, Akku und Prozentanzeige; Uhr, Datum und der Hinweis
-zum Entsperren bleiben unberuehrt. Das ist sogar das gewuenschte Verhalten --
-man sieht ohne Entsperren, dass ein Schalter gesperrt ist. Die leere
-Eingaberegion sorgt dafuer, dass die Wischgeste zum Entsperren durchkommt --
-allerdings erst seit dem 15.09.: was am 14.09. geprueft wurde, war das Bild,
-nicht die Geste. Bis dahin lag der Streifen ueber der ganzen Breite und nahm
-jede Beruehrung an, auf dem Sperrbildschirm wie darueber.
+**Lock screen: checked, unproblematic.** `OVERLAY` is also the layer of phosh's
+lock screen. Tested on 14.09. with `loginctl lock-session`: the icons stand
+there in the same place as when unlocked, neatly in the bar next to signal,
+battery and percentage; clock, date and the unlock hint stay untouched. That is
+even the wanted behaviour -- you see without unlocking that a switch is
+engaged. The empty input region is what lets the unlock swipe through -- but
+only since 15.09.: what was checked on 14.09. was the picture, not the gesture.
+Until then the strip lay across the whole width and accepted every touch, on
+the lock screen as above it.
 
-**Screenshots hinken.** `org.gnome.Shell.Screenshot` liefert den zuletzt
-gerenderten Frame. Aendert sich am Bildschirm sonst nichts, zeigt ein
-Screenshot den Stand von vorher -- zweimal ausloesen oder die Lage der Pixel
-messen, statt dem ersten Bild zu glauben.
+**Screenshots lag.** `org.gnome.Shell.Screenshot` delivers the last rendered
+frame. If nothing else changes on screen, a screenshot shows the previous state
+-- trigger it twice, or measure where the pixels are, rather than believing the
+first image.
 
-**Anzeigeskalierung 1,5.** 720x1600 physisch, 480x1067 logisch. Alle Groessen
-im Programm sind logische Pixel.
+**Display scaling 1.5.** 720x1600 physical, 480x1067 logical. All sizes in the
+program are logical pixels.
 
-## Der Aufwach-Ausloeser, und warum er zwei Tage lang nichts tat
+## The wake-up trigger, and why it did nothing for two days
 
-Das Mikrofon hat keinen auslesbaren Zustand, es muss gemessen werden, und
-gemessen wird nur zu Anlaessen: beim Start und wenn das Telefon aus dem
-Leerlauf oder aus der Sperre zurueckkommt. logind liefert dafuer genau das
-Richtige -- `PropertiesChanged` auf der Sitzung mit `LockedHint` bzw.
-`IdleHint`. Am 14.9.2026 mit `dbus-monitor` nachgesehen: beide Flanken kommen
-zuverlaessig, `LockedHint true` beim Sperren, `false` beim Entsperren.
+The microphone has no readable state, it has to be measured, and it is measured
+only on occasions: at start, and when the phone comes back from idle or from
+the lock. logind delivers exactly the right thing for that --
+`PropertiesChanged` on the session with `LockedHint` and `IdleHint`
+respectively. Checked with `dbus-monitor` on 14.9.2026: both edges arrive
+reliably, `LockedHint true` on locking, `false` on unlocking.
 
-Der Dienst bekam trotzdem nie eines dieser Signale zu sehen. Kein Fehler, kein
-Eintrag im Journal, der Dienst `active (running)` -- nur eine Zustandsdatei,
-in der seit dem Start ausschliesslich `"reason": "Start"` stand.
+The service nevertheless never got to see one of those signals. No error, no
+entry in the journal, the service `active (running)` -- only a state file that
+had contained nothing but `"reason": "Start"` since it started.
 
-**Die Ursache war eine lokale Variable.** `watch_wakeups()` holte sich die
-Systembus-Verbindung, abonnierte darauf und kehrte zurueck. Damit gab Python
-die Verbindung frei, und das Abo verfiel mit ihr. Isoliert nachgestellt, zwei
-Fassungen desselben Programms, gleicher Ablauf:
+**The cause was a local variable.** `watch_wakeups()` fetched the system bus
+connection, subscribed on it and returned. With that Python released the
+connection, and the subscription expired with it. Reproduced in isolation, two
+versions of the same program, same sequence:
 
-| Verbindung | Signale beim Sperren/Entsperren |
+| Connection | Signals on lock/unlock |
 |---|---|
-| nur lokal | **keines** |
-| auf `self` gehalten | beide |
+| local only | **none** |
+| held on `self` | both |
 
-Am Geraet danach belegt, beide Wege: `reason: "LockedHint"` 4,8 s nach dem
-Sperren, und `reason: "LockedHint, nachgeholt"`, wenn die Abkuehlzeit von 20 s
-noch laeuft -- ein Anlass waehrend der Abkuehlzeit wird verschoben, nie
-verworfen.
+Proven on the device afterwards, both ways: `reason: "LockedHint"` 4.8 s after
+locking, and `reason: "LockedHint, caught up"` when the 20 s cool-down is still
+running -- an occasion during the cool-down is postponed, never dropped.
 
-**Ende zu Ende bestaetigt** (14.9. 17:10, mit der Hand am Schalter): Mikro
-gesperrt, Telefon gesperrt -- `Mikrofon: GESPERRT (Median 3.18, Anlass:
-IdleHint)`, Symbol in der Leiste sichtbar. Schalter zurueck, naechster Anlass
-`Mikrofon: frei (Median 6.88, Anlass: LockedHint, nachgeholt)`, Symbol weg.
-Beide Schluessel feuern also, `IdleHint` und `LockedHint` -- und `IdleHint`
-kommt zuerst, weil der Bildschirm ausgeht, bevor die Sperre greift.
+**Confirmed end to end** (14.9. 17:10, with a hand on the switch): microphone
+engaged, phone locked -- `Microphone: ENGAGED (median 3.18, occasion:
+IdleHint)`, icon visible in the bar. Switch back, next occasion `Microphone:
+free (median 6.88, occasion: LockedHint, caught up)`, icon gone. So both keys
+fire, `IdleHint` and `LockedHint` -- and `IdleHint` comes first, because the
+screen goes off before the lock takes hold.
 
-**Der Abstand zur Schwelle ist kleiner als gedacht.** 6,88 ist der bisher
-niedrigste gemessene frei-Wert (vorher 8,72) bei 3,18 als hoechstem
-gesperrt-Wert. Die Schwelle 4,5 liegt weiter richtig dazwischen, aber der
-Spielraum nach unten betraegt nur noch rund das Anderthalbfache -- in einem
-sehr stillen Raum ist das die Groesse, auf die zu achten ist. Beide Werte
-stehen jetzt in den Testreihen.
+**The margin to the threshold is smaller than expected.** 6.88 is the lowest
+free value measured so far (previously 8.72) against 3.18 as the highest
+engaged value. Threshold 4.5 still sits correctly between them, but the room
+below is now only about one and a half times -- in a very quiet room that is
+the figure to watch. Both values are in the test series now.
 
-**UNGEKLAERT, und deshalb hier als offene Frage notiert:** direkt nach diesem
-Versuch meldete der Benutzer, der Schalter sei die ganze Zeit gesperrt
-gewesen und es werde trotzdem kein Symbol gezeigt. Beide Lesarten sind
-moeglich und noch nicht entschieden:
+**UNEXPLAINED, and therefore noted here as an open question:** right after this
+experiment the user reported that the switch had been engaged the whole time
+and no icon was shown all the same. Both readings are possible and not yet
+decided:
 
-1. Der Schalter war um 17:11 kurz frei (dann ist 6,88 ein echter frei-Wert und
-   die Einstufung stimmt).
-2. Er war durchgehend gesperrt (dann hat die Messung zweimal falsch "frei"
-   gesagt, und die Schwelle taugt nicht).
+1. The switch was briefly free at 17:11 (then 6.88 is a genuine free value and
+   the classification is right).
+2. It was engaged throughout (then the measurement said "free" twice when it
+   should not have, and the threshold is no good).
 
-Was danach gemessen wurde, spricht fuer die erste Lesart. 38 Messungen bei
-gesperrtem Schalter, davon 17 mit eingeschaltetem Bildschirm und dem Telefon
-in der Hand: **Median 2,82 bis 3,17, Spitze 35 bis 45** -- kein einziger
-Ausreisser nach oben. Ein Weckvorgang hebt nur die Spitze (593 und 144
-gemessen), nicht den Median; genau dagegen wurde der Median gewaehlt. Eine
-gekappte Leitung liefert also einen festen Rauschteppich, waehrend die beiden
-strittigen Messungen Spitzen von 148 und 158 bei doppeltem Median zeigten --
-das Bild eines lebenden Mikrofons in einem stillen Raum.
+What was measured afterwards speaks for the first reading. 38 measurements with
+the switch engaged, 17 of them with the screen on and the phone in hand:
+**median 2.82 to 3.17, peak 35 to 45** -- not a single outlier upwards. Waking
+up raises only the peak (593 and 144 measured), not the median; that is exactly
+what the median was chosen against. A cut line therefore delivers a fixed
+carpet of noise, while the two disputed measurements showed peaks of 148 and
+158 at twice the median -- the picture of a live microphone in a quiet room.
 
-**Die wirkliche Luecke ist eine andere und unabhaengig davon da:** der
-Mikrofon-Schalter meldet sich nirgends an. Wer ihn bei eingeschaltetem
-Bildschirm umlegt, loest gar nichts aus -- es gibt keinen Anlass zwischen
-Start und Aufwachen, das Symbol bleibt stehen wie es war.
+**The real gap is a different one and is there regardless:** the microphone
+switch announces itself nowhere. Flipping it while the screen is on triggers
+nothing at all -- there is no occasion between start and waking up, and the
+icon stays as it was.
 
-### Entschieden (14.9.2026): gar nicht mehr messen
+### Decided (14.9.2026): do not measure at all any more
 
-Die Abwaegung oben ist gefallen, und zwar gegen das Messen. Die Alternative
-waere gewesen, regelmaessig nachzusehen -- also das Mikrofon regelmaessig zu
-oeffnen, genau das, wogegen jemand den Schalter umlegt. Ohne das bleibt die
-Anzeige zwischen zwei Anlaessen stehen, und eine Anzeige, die manchmal stimmt,
-ist schlechter als keine: sie laedt dazu ein, sich auf sie zu verlassen.
+The weighing above has been settled, and against measuring. The alternative
+would have been to look regularly -- that is, to open the microphone regularly,
+exactly the thing somebody flips the switch against. Without that the indicator
+stands still between two occasions, and an indicator that is sometimes right is
+worse than none: it invites people to rely on it.
 
-Entfernt: das dritte Symbol, das logind-Abo, die Messung beim Start und beim
-Umlegen der anderen Schalter, die Abkuehlzeit, das Feld `mic` in
-`status --json` (ein stehengebliebenes Urteil in `state.json` wird beim Start
-weggeraeumt). Geblieben: `mic-check`, eine Messung auf Zuruf, mit allen
-Schwellen dieses Abschnitts -- und der Hinweis dort, dass sie nur fuer diese
-drei Sekunden gilt.
+Removed: the third icon, the logind subscription, the measurement at start and
+when the other switches are flipped, the cool-down, the `mic` field in
+`status --json` (a verdict left behind in `state.json` is cleared at start).
+Kept: `mic-check`, one measurement on request, with all the thresholds of this
+section -- and the note there that it only holds for those three seconds.
 
-Die Oberflaeche sagt das jetzt aus, statt es zu verschweigen: unter "3 ·
-Microphone" steht als Position "not readable - and not listened for either",
-dazu warum, und `mic-check` als das, was von Hand moeglich bleibt. Vier Tests
-(30-34) halten die Automatik fern, damit sie nicht aus Versehen zurueckkommt.
+The interface says so now instead of keeping quiet about it: under "3 ·
+Microphone" the position reads "not readable - and not listened for either",
+together with why, and `mic-check` as what remains possible by hand. Four tests
+(30-34) keep the automation away so it cannot come back by accident.
 
-**Merke:** ein GDBus-Abo lebt auf der Verbindung, nicht fuer sich. Wo die
-Schwesterdienste (`furios-audio-sco-hold`, `pause-on-disconnect`) es richtig
-machen, ist das Zufall der Bauform: dort laeuft die Hauptschleife im selben
-`main()`, das die Verbindung noch haelt. Ein Test darauf prueft nicht das Abo,
-sondern dass die Verbindung die Methode ueberlebt.
+**Note:** a GDBus subscription lives on the connection, not on its own. Where
+the sibling services (`furios-audio-sco-hold`, `pause-on-disconnect`) get it
+right, that is an accident of their shape: there the main loop runs in the same
+`main()` that still holds the connection. A test for that does not check the
+subscription, it checks that the connection outlives the method.
 
-## Die Assistant-Taste
+## The assistant button
 
-`/usr/libexec/assistant-button` liest `event2` (Keycode 112), Konfiguration aus
-`/usr/lib/furios/device/assistant-button.conf` -- die Geraetekonfiguration
-gewinnt gegen die Vorgabe in `/usr/share`, weshalb dort `event2` steht und
-nicht das voreingestellte `event1`. Unterschieden werden kurz (< 500 ms), lang
-und doppelt (< 200 ms Abstand). Pro Geste liegt in
-`~/.config/assistant-button/` entweder ein Index auf eine vordefinierte Aktion
-(`*_predefined`: 0 keine, dann Taschenlampe, Kamera oeffnen, Foto, Screenshot,
-Tab, manuelle Drehung, Zurueck, Escape) oder eine ausfuehrbare Datei mit einem
-freien Befehl. Zusaetzlich sendet das Programm `ActionPerformed` auf
+`/usr/libexec/assistant-button` reads `event2` (keycode 112), configuration
+from `/usr/lib/furios/device/assistant-button.conf` -- the device configuration
+wins over the default in `/usr/share`, which is why `event2` is there and not
+the preset `event1`. It distinguishes short (< 500 ms), long and double
+(< 200 ms apart). Per gesture, `~/.config/assistant-button/` holds either an
+index into a predefined action (`*_predefined`: 0 none, then torch, open
+camera, photo, screenshot, tab, manual rotation, back, escape) or an executable
+file with a free command. In addition the program sends `ActionPerformed` on
 `io.FuriOS.AssistantButton`.
 
-Diese Taste ist nicht Teil der Anzeige: sie hat keinen Ruhezustand, den man
-anzeigen koennte.
+This button is not part of the indicator: it has no resting state that could be
+displayed.
 
-## Aus dem README
+## From the README
 
-Das README wurde auf das gekuerzt, was man zum Benutzen braucht. Was hier folgt, stand bis dahin dort: die Begruendungen, die Messwerte und die Abwaegungen hinter den Entscheidungen.
+The README was cut down to what is needed to use the thing. What follows stood
+there until then: the reasons, the measurements and the trade-offs behind the
+decisions.
 
-## Was angezeigt wird
+## What is displayed
 
-| Schalter | Symbol | Bedeutung | Erkennung |
+| Switch | Icon | Meaning | Detection |
 |---|---|---|---|
-| Kamera (GPIO 51) | durchgestrichene Kamera | Kamera-HAL ist gestoppt | sysfs, sofort |
-| Mobilfunk (GPIO 52) | durchgestrichene Signalbalken | RIL ist gestoppt | sysfs, sofort |
-| Mikrofon | **keins** | -- | nicht erkennbar, siehe unten |
+| Camera (GPIO 51) | crossed-out camera | the camera HAL is stopped | sysfs, immediately |
+| Cellular (GPIO 52) | crossed-out signal bars | the RIL is stopped | sysfs, immediately |
+| Microphone | **none** | -- | not detectable, see below |
 
-Der Mikrofon-Schalter hat **keinen** auslesbaren Zustand -- er ist der einzige
-der drei, der wirklich die Leitung kappt, und genau deshalb sieht das System
-ihn nicht. Unterscheiden liesse er sich nur durchs Zuhoeren: drei Sekunden
-aufnehmen und den Median der Blockpegel mit einer am Geraet gemessenen
-Schwelle vergleichen.
+The microphone switch has **no** readable state -- it is the only one of the
+three that really cuts the line, and that is exactly why the system does not
+see it. It could only be told apart by listening: record three seconds and
+compare the median of the block levels against a threshold measured on the
+device.
 
-Genau das tut dieses Programm **nicht** mehr. Dafuer muesste es das Mikrofon
-oeffnen -- das, wogegen der Schalter umgelegt wird --, und die Antwort gaelte
-nur fuer diese drei Sekunden: umgelegt bei wachem Bildschirm meldet sich der
-Schalter nirgends, es gibt kein Ereignis, auf das hin nachgesehen wuerde. Ein
-Symbol, das manchmal stimmt, ist schlechter als keins. Fuer diesen Schalter
-ist der Schieber am Gehaeuse die Anzeige.
+That is exactly what this program no longer does. It would have to open the
+microphone -- the thing the switch is flipped against -- and the answer would
+hold only for those three seconds: flipped while the screen is awake, the
+switch announces itself nowhere, there is no event on which to look again. An
+icon that is sometimes right is worse than none. For this switch, the slider on
+the case is the indicator.
 
-Wer doch eine Zahl will, holt sie sich von Hand:
-
-```bash
-killswitch-indicator mic-check         # einmal messen, oeffnet dafuer kurz das Mikrofon
-```
-
-Die Symbole erscheinen rechtsbuendig, links neben Standort, Akku und
-Prozentanzeige. Steht ein Schalter frei, ist dort nichts zu sehen.
-
-## Was der Netzschalter zusaetzlich abschalten darf
-
-Der Schalter selbst nimmt nur das Modem herunter -- WLAN und Bluetooth laufen
-weiter. Beides laesst sich dazunehmen; das Programm schaltet sie dann ab,
-sobald der Schalter sperrt, und wieder ein, wenn er zurueckgeht:
+Anybody who does want a number takes it by hand:
 
 ```bash
-killswitch-indicator config                 # zeigen, was eingestellt ist
-killswitch-indicator config wifi on         # WLAN mit abschalten
-killswitch-indicator config bluetooth off   # Bluetooth in Ruhe lassen
+killswitch-indicator mic-check         # measure once; opens the microphone briefly
 ```
 
-Vorgabe ist beides aus: ein Schalter, der stillschweigend mehr tut als
-angeschrieben, ist schlimmer als einer, der zu wenig tut. Wieder eingeschaltet
-wird nur, was dieses Programm selbst abgeschaltet hat -- wer WLAN vorher von
-Hand aus hatte, findet es hinterher nicht an.
+The icons appear right-aligned, to the left of location, battery and
+percentage. Where a switch is free, nothing is shown.
 
-Das **Modem** laesst sich nicht abwaehlen. Die Android-Seite stoppt den RIL,
-bevor hier ueberhaupt jemand von der Schalterstellung erfaehrt; es abzuwaehlen
-hiesse, das Modem hinter dem Schalter wieder hochzufahren.
+## What the network switch may switch off as well
 
-Kein root noetig: `logind` ordnet den Dienst der aktiven Sitzung zu, und
-NetworkManager erlaubt ihr das Schalten ohne Passwort (`allow_active`).
+The switch itself only takes the modem down -- Wi-Fi and Bluetooth keep
+running. Both can be included; the program then switches them off as soon as
+the switch engages, and back on when it goes back:
 
-## Die Oberflaeche
+```bash
+killswitch-indicator config                 # show what is set
+killswitch-indicator config wifi on         # switch Wi-Fi off as well
+killswitch-indicator config bluetooth off   # leave Bluetooth alone
+```
 
-Der Reiter **Switches** in der App `misc-de` (aus furios_pipewire) zeigt alle
-drei Schalter, schaltet den Indikator an und aus, merkt sich das ueber den
-Neustart hinaus und bietet die Auswahl oben an. Er erscheint nur, wenn dieses
-Werkzeug installiert ist.
+The default is both off: a switch that quietly does more than it says is worse
+than one that does too little. Only what this program switched off itself is
+switched back on -- anybody who had Wi-Fi off by hand beforehand does not find
+it on afterwards.
 
-## Wie es funktioniert
+The **modem** cannot be deselected. The Android side stops the RIL before
+anybody here even learns of the switch position; deselecting it would mean
+bringing the modem back up behind the switch.
 
-Der FuriLabs-eigene Kernel-Treiber `custom_keys` legt die Schalterstellung
-unter `/sys/devices/platform/custom-keys/{cam_switch,nwk_switch}` ab: `1` heisst
-frei, `0` heisst gesperrt. Das Programm prueft beide Attribute alle zwei
-Sekunden.
+No root needed: `logind` assigns the service to the active session, and
+NetworkManager allows that session to switch without a password
+(`allow_active`).
 
-Am Geraet gemessen: der Treiber ruft `sysfs_notify()` **nicht** auf -- `poll()`
-blieb ueber einen vollstaendigen Umschaltvorgang stumm, waehrend der Wert sich
-nachweislich aenderte. Das Intervall ist damit nicht nur ein Sicherheitsnetz,
-sondern die Reaktionszeit der Anzeige. Es kostet 0,0154 % eines Kerns, also
-13,3 s CPU-Zeit pro Tag; laenger heisst spaeter sichtbar, ohne nennenswerte
-Ersparnis. Wer trotzdem drehen will:
+## The interface
+
+The **Switches** tab in the app `misc-de` shows all three switches, turns the
+indicator on and off, remembers that across a reboot and offers the choice at
+the top. It appears only where this tool is installed.
+
+## How it works
+
+FuriLabs' own kernel driver `custom_keys` puts the switch position under
+`/sys/devices/platform/custom-keys/{cam_switch,nwk_switch}`: `1` means free,
+`0` means engaged. The program checks both attributes every two seconds.
+
+Measured on the device: the driver does **not** call `sysfs_notify()` --
+`poll()` stayed silent across a complete switching sequence while the value
+demonstrably changed. The interval is therefore not merely a safety net but the
+reaction time of the indicator. It costs 0.0154 % of a core, i.e. 13.3 s of CPU
+time per day; longer means later visible, without a worthwhile saving. For
+anybody who wants to turn it anyway:
 
 ```bash
 killswitch-indicator run --interval 10
-# oder dauerhaft in der Unit: FURIOS_KILLSWITCH_INTERVAL=10
+# or permanently in the unit: FURIOS_KILLSWITCH_INTERVAL=10
 ```
 
-Das Symbol ist ein Layer-Shell-Fenster auf der Ebene `OVERLAY` mit leerer
-Eingaberegion -- es faengt also keine Beruehrung ab, insbesondere nicht die
-Wischgeste, die die Schnelleinstellungen oeffnet. Die Region wird beim
-Zeichnen gesetzt und nicht beim `realize`: von dort aus kommt sie nicht beim
-Compositor an, und der Streifen liegt ueber der ganzen Breite der Leiste.
-Siehe [FINDINGS.md](FINDINGS.md).
+The icon is a layer-shell window on the `OVERLAY` layer with an empty input
+region -- so it catches no touch, in particular not the swipe that opens the
+quick settings. The region is set while drawing and not at `realize`: from
+there it does not reach the compositor, and the strip lies across the whole
+width of the bar.
 
-Im Sperrbildschirm ist es ebenfalls zu sehen, an derselben Stelle und ohne
-etwas zu verdecken: man erkennt also ohne Entsperren, dass ein Schalter
-gesperrt ist.
-
-Warum nicht die Tastencodes des Treibers, warum nicht rfkill, und was beim
-Umlegen eines Schalters tatsaechlich passiert: siehe [FINDINGS.md](FINDINGS.md).
+It is visible on the lock screen as well, in the same place and without
+covering anything: so you can tell without unlocking that a switch is engaged.
