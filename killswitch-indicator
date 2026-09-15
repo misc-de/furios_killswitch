@@ -382,7 +382,7 @@ def cmd_config(args):
     if args.radio is None:
         for radio, (label, *_rest) in RADIOS.items():
             print(f"{radio:10s} {'yes' if config_enabled(config, radio) else 'no':5s}"
-                  f"  # {label} beim Netzschalter mit abschalten")
+                  f"  # switch {label} off with the network switch")
         return 0
     if args.value is None:
         print("yes" if config_enabled(config, args.radio) else "no")
@@ -647,7 +647,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0],
                                      parents=[common])
     sub = parser.add_subparsers(dest="command")
-    sub.add_parser("run", parents=[common], help="Symbol anzeigen (Vorgabe)")
+    sub.add_parser("run", parents=[common], help="show the icon (default)")
     st = sub.add_parser("status", parents=[common],
                         help="print the switch positions and exit")
     st.add_argument("--json", action="store_true",
@@ -664,7 +664,7 @@ def main():
     cfg.add_argument("radio", nargs="?", choices=sorted(RADIOS),
                      help="wifi oder bluetooth")
     cfg.add_argument("value", nargs="?", choices=("on", "off"),
-                     help="on = mit abschalten, off = unberuehrt lassen")
+                     help="on = switch it off as well, off = leave it alone")
     args = parser.parse_args()
     args.verbose = getattr(args, "verbose", False)
     args.interval = getattr(args, "interval",
