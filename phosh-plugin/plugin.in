@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 misc-de
+# SPDX-License-Identifier: MIT
+#
+# Written by the Makefile: @PLUGIN_DIR@ is where phosh's own
+# pkg-config file says status-icon plugins live.
+[Plugin]
+Id=furios-killswitch
+Name=Kill switch icons
+Types=status-icon;
+Comment=Shows an icon in the top bar while a hardware kill switch is engaged
+Plugin=@PLUGIN_DIR@/libphosh-plugin-furios-killswitch.so

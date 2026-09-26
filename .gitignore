@@ -1,6 +1,12 @@
-# Byte-Code der Testlaeufe
+# Byte code from test runs
 __pycache__/
 *.pyc
 
-# Gebaute Pakete
+# Built packages
 *.deb
+
+# What the compiler builds: the plugin, the metadata file generated from
+# plugin.in, and the test program.
+*.so
+phosh-plugin/furios-killswitch.plugin
+phosh-plugin/tests/plugin-loads

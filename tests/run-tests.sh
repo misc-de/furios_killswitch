@@ -64,9 +64,11 @@ for icon in camera-disabled network-cellular-disabled; do
     check "icon ${icon}-symbolic present" "yes" "$([ -n "$found" ] && echo yes || echo no)"
 done
 
-# 13: install.sh refuses to run as root
-out="$(echo | sudo -n true 2>/dev/null; grep -c 'WITHOUT sudo' "$SRC/install.sh")"
-check "install.sh refuses root" "1" "$out"
+# 13: install.sh refuses to run as root. It does ask for root for the one
+# step that needs it - the plugin goes into phosh's directory - but run as
+# root throughout it would install the daemon into root's home.
+check "install.sh refuses root" "1" \
+    "$(grep -c 'if \[ "$(id -u)" = 0 \]; then' "$SRC/install.sh")"
 
 # 14-16: -v has to work on both sides of the subcommand. That is exactly what
 # went wrong: "run -v" died with "unrecognized arguments", the service was
@@ -169,8 +171,8 @@ import importlib.machinery, importlib.util, sys
 loader = importlib.machinery.SourceFileLoader("ks", sys.argv[1])
 spec = importlib.util.spec_from_loader("ks", loader)
 mod = importlib.util.module_from_spec(spec); loader.exec_module(mod)
-ind = mod.Indicator.__new__(mod.Indicator)
-ind.forget_stale_mic_state()
+w = mod.Watcher.__new__(mod.Watcher)
+w.forget_stale_mic_state()
 PYEOF2
 check "an old verdict is forgotten at start" "0" \
     "$(grep -c 'mic' "$TMP/config/furios-killswitch/state.json")"
@@ -179,18 +181,171 @@ check "an old verdict is forgotten at start" "0" \
 check "mic-check is still there" "yes" \
     "$("$PROG" --help | grep -q 'mic-check' && echo yes || echo no)"
 
-# 38-40: The empty input region, and the one place where it arrives. Set from
-# "realize" it does NOTHING: gtk-layer-shell swaps the surface between realize
-# and map for a layer surface, and GDK only sends the region to the compositor
-# while drawing. Measured on the device on 15.09.2026 with WAYLAND_DEBUG=1 --
-# the strip went up with set_input_region(nil) and swallowed the swipe to the
-# quick settings across the whole width of the bar.
-check "input region not from realize" "0" \
-    "$(grep -c 'connect("realize"' "$PROG")"
-check "input region while drawing" "1" \
-    "$(grep -c 'def on_draw' "$PROG")"
-check "an empty region, nothing else" "1" \
-    "$(grep -c 'input_shape_combine_region(self.cairo.Region(), 0, 0)' "$PROG")"
+# 38-41: Nothing here draws any more. The icons were a layer-shell strip of
+# our own, and a strip can only pin them a fixed distance from an edge: it
+# cannot see how wide phosh's indicators are at that moment, so the battery
+# time that appeared beside them ended up underneath them. In the shell's own
+# box they are laid out with everything else, and the whole apparatus that
+# went with a surface of our own - the empty input region that kept the swipe
+# to the quick settings working, the layer, the CSS - goes with it.
+for gone in GtkLayerShell input_shape_combine_region Gtk.main "import cairo"; do
+    check "no window of our own any more: $gone" "0" "$(grep -c -- "$gone" "$PROG")"
+done
+
+# 42-43: The two halves know each other by one name, and it is written down
+# once. A mismatch there is silent: the shell says "Custom status-icon '...'
+# not found" once, at its start, and carries on without the icons.
+id_in_plugin=$(sed -n 's/^Id=//p' "$SRC/phosh-plugin/plugin.in")
+id_in_tool=$(sed -n 's/^PLUGIN_ID = "\(.*\)"$/\1/p' "$PROG")
+check "the plugin declares a name" "furios-killswitch" "$id_in_plugin"
+check "and the tool switches that same name on" "$id_in_plugin" "$id_in_tool"
+
+# 44-46: switching the icons on and off is one command, and both scripts go
+# through it rather than editing phosh's list themselves - the list may hold
+# somebody else's plugin.
+check "icons is offered" "yes" \
+    "$("$PROG" --help | grep -q ' icons ' && echo yes || echo no)"
+for script in install uninstall; do
+    check "$script.sh goes through the tool" "1" \
+        "$(grep -c 'killswitch-indicator" icons' "$SRC/$script.sh")"
+done
+
+# 47: reading the setting is allowed to answer "no phosh here" - the tests
+# run on machines that have none, and must never write the real list.
+"$PROG" icons >/dev/null 2>&1
+rc=$?
+check "icons without an argument only reads" "yes" \
+    "$([ "$rc" = 0 ] || [ "$rc" = 1 ] && echo yes || echo no)"
+
+# 48: status --json carries it too, because that is the one call the app makes
+check "status --json says whether the icons are on" "1" \
+    "$(FURIOS_KILLSWITCH_BASE=$TMP "$PROG" status --json | grep -c '"icons"')"
+
+# 49: the icons the plugin asks for have to exist in the theme, the same way
+# the daemon's used to.
+missing=""
+for icon in camera-disabled network-cellular-disabled; do
+    grep -q "\"$icon-symbolic\"" "$SRC/phosh-plugin/killswitch-icons.c" \
+        || missing="$missing $icon"
+done
+check "the plugin names the icons that exist" "" "$missing"
+
+# 50-56: the extra radios, driven with a D-Bus that answers slowly - the way
+# NetworkManager does - and a switch that goes down and up again meanwhile.
+ks_py() {
+    python3 - "$PROG" "$@" <<'PYEOF3'
+import importlib.machinery, importlib.util, os, sys, time, threading
+loader = importlib.machinery.SourceFileLoader("ks", sys.argv[1])
+spec = importlib.util.spec_from_loader("ks", loader)
+mod = importlib.util.module_from_spec(spec); loader.exec_module(mod)
+radios = {"wifi": True, "bluetooth": True}
+def slow_set(radio, enabled):
+    time.sleep(0.2)
+    radios[radio] = enabled
+    return True
+mod.radio_state = lambda radio: radios[radio]
+mod.set_radio = slow_set
+def config(**on):
+    c = mod.load_config()
+    for radio in mod.RADIOS:
+        c.set("network", radio, "yes" if on.get(radio) else "no")
+    mod.save_config(c)
+def reset():
+    radios.update(wifi=True, bluetooth=True)
+    mod.save_state({})
+case = sys.argv[2]
+if case == "down-up":
+    config(wifi=True); reset()
+    if not hasattr(mod, "queue_network_extras"):
+        print("no worker"); sys.exit()
+    mod.queue_network_extras(True)
+    mod.queue_network_extras(False).join()
+    print(radios["wifi"], mod.load_state().get("we_disabled"))
+elif case == "option-off":
+    config(wifi=True); reset()
+    mod.apply_network_extras(True)
+    config(wifi=False)
+    mod.apply_network_extras(False)
+    print(radios["wifi"], mod.load_state().get("we_disabled"))
+elif case == "unreadable":
+    moves = []
+    mod.queue_network_extras = lambda *a: moves.append(a)
+    mod.threading.Thread = lambda target, args, **k: type(
+        "T", (), {"start": lambda self: moves.append(args)})()
+    w = mod.Watcher.__new__(mod.Watcher)
+    w.verbose = False
+    w.state = {"cam_switch": False, "nwk_switch": True}
+    mod.read_switch = lambda name: None
+    w.refresh()
+    print(len(moves), w.state["nwk_switch"])
+elif case == "symlink":
+    os.makedirs(mod.CONFIG_DIR, exist_ok=True)
+    victim = os.path.join(os.path.dirname(mod.CONFIG_DIR), "victim")
+    with open(victim, "w") as fh:
+        fh.write("untouched\n")
+    try:
+        os.unlink(mod.CAMERA_CACHE)
+    except OSError:
+        pass
+    os.symlink(victim, mod.CAMERA_CACHE)
+    mod.subprocess.run = lambda *a, **k: type(
+        "Out", (), {"stdout": "  Facing: Back\n"})()
+    mod.list_cameras(refresh=True)
+    print(open(victim).read().strip())
+    os.unlink(mod.CAMERA_CACHE)
+elif case == "sudo-order":
+    calls = []
+    real_open = os.open
+    os.environ.update(SUDO_UID="4711", SUDO_GID="4712")
+    mod.os.geteuid = lambda: 0
+    mod.os.seteuid = lambda v: calls.append("euid %d" % v)
+    mod.os.setegid = lambda v: calls.append("egid %d" % v)
+    def recording_open(path, *a, **k):
+        calls.append("open")
+        return real_open(path, *a, **k)
+    mod.os.open = recording_open
+    mod.subprocess.run = lambda *a, **k: type(
+        "Out", (), {"stdout": "  Facing: Back\n"})()
+    mod.list_cameras(refresh=True)
+    print(",".join(calls))
+PYEOF3
+}
+check "switch down and up while D-Bus is slow: Wi-Fi comes back, nothing left over" \
+    "True []" "$(ks_py down-up)"
+check "an option switched off meanwhile still gets its radio back" \
+    "True []" "$(ks_py option-off)"
+check "an unreadable switch is not a move to 'free'" "0 True" "$(ks_py unreadable)"
+check "sudo cameras --refresh: a planted symlink is not followed" \
+    "untouched" "$(ks_py symlink)"
+check "sudo cameras --refresh: writes as the user, and gives root back after" \
+    "egid 4712,euid 4711,open,euid 0,egid 0" "$(ks_py sudo-order)"
+check "mic-check speaks English" "0" "$(grep -c 'Fehlmessung' "$PROG")"
+
+# The plugin's own suite: built and loaded the way phosh loads it, then driven
+# through a directory of switch files. It needs phosh's headers and a display,
+# and says so rather than failing when either is missing.
+echo
+echo "== the icons (phosh plugin)"
+if ! pkg-config --exists phosh-plugins gtk+-3.0 2>/dev/null; then
+    echo "SKIP  no phosh-plugins/gtk+-3.0 (apt install phosh-dev libgtk-3-dev)"
+elif ! make -C "$SRC/phosh-plugin" all tests/plugin-loads >/dev/null; then
+    echo "FAIL  the plugin does not build"; fail=$((fail+1))
+else
+    # GDK looks for the Wayland socket under XDG_RUNTIME_DIR; an absolute
+    # WAYLAND_DISPLAY is read as the socket itself.
+    if [ -n "${WAYLAND_DISPLAY:-}" ] && [ "${WAYLAND_DISPLAY#/}" = "${WAYLAND_DISPLAY}" ]; then
+        export WAYLAND_DISPLAY="${XDG_RUNTIME_DIR:-/nonexistent}/$WAYLAND_DISPLAY"
+    fi
+    "$SRC/phosh-plugin/tests/plugin-loads" "$SRC/phosh-plugin"
+    rc=$?
+    if [ "$rc" -eq 77 ]; then
+        :   # the test says what it is missing, and it is not a failure
+    elif [ "$rc" -ne 0 ]; then
+        fail=$((fail+1))
+    else
+        pass=$((pass+1))
+    fi
+fi
 
 echo
 echo "$pass passed, $fail failed"

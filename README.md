@@ -9,6 +9,19 @@ Without it there is nothing on screen to tell you: FuriOS creates no rfkill
 device for these switches, so the bar goes on showing the signal strength of a
 modem that is no longer there.
 
+It comes in two halves, and they are installed in different places:
+
+* **the icons** — a phosh status-icon plugin (`phosh-plugin/`). They sit in
+  phosh's own indicator box, at its left end, so the box lays them out with
+  everything else in it and nothing can overlap. They were a layer-shell strip
+  of our own once, and a strip can only pin them a fixed distance from an edge:
+  it cannot see how wide the indicators are at that moment, so anything that
+  appeared beside them ended up underneath.
+* **the daemon** — what a widget in the shell's process has no business doing:
+  taking Wi-Fi or Bluetooth down with the network switch and bringing them
+  back, saying in the journal when a switch moved, and answering `status` for
+  the app.
+
 | Switch | Icon | What it means |
 |---|---|---|
 | Camera | crossed-out camera | the camera HAL is stopped |
@@ -28,10 +41,20 @@ If you do want a reading, take one by hand with
 
     ./install.sh        # without sudo
 
-Installs to `~/.local/bin`, sets up a systemd user unit and starts it. Remove
-with `./uninstall.sh`.
+Builds the plugin, puts it where phosh looks for plugins, adds it to the
+shell's list, and installs the daemon into `~/.local/bin` with a systemd user
+unit. Remove both again with `./uninstall.sh`.
 
-Nothing here needs root: it reads two sysfs attributes and nothing else.
+**The icons appear after the next reboot.** phosh scans its plugin directory
+once, when it starts, and its unit refuses to be restarted on its own —
+stopping the shell by hand takes the whole session with it. Switching them off
+again, on the other hand, works immediately: the shell follows the setting
+while it runs.
+
+The one step that needs root is the plugin: phosh takes its plugin directory
+from a compile-time constant, so there is no place in the home the shell would
+look in. The daemon needs none — it reads two sysfs attributes and nothing
+else.
 
 ## Usage
 
@@ -39,7 +62,7 @@ Nothing here needs root: it reads two sysfs attributes and nothing else.
     killswitch-indicator status --json   the same for the app
     killswitch-indicator cameras         which cameras the switch affects
     killswitch-indicator mic-check       measure the microphone once, by hand
-    killswitch-indicator run -v          show the icon, log every change
+    killswitch-indicator run -v          follow the switches, log every change
 
     systemctl --user status killswitch-indicator
     journalctl --user -u killswitch-indicator -f
@@ -62,8 +85,10 @@ the same settings.
 
     ./tests/run-tests.sh        # never with sudo
 
-Runs without a display: switch positions are read from a test directory via
-`FURIOS_KILLSWITCH_BASE`.
+Runs without a display, except for the plugin's own suite — that one builds
+the plugin, loads it the way phosh does and moves the switches under it, and
+skips itself when there is no display or no `phosh-dev`. Switch positions come
+from a test directory, via `FURIOS_KILLSWITCH_BASE` on both sides.
 
 ## Licence
 

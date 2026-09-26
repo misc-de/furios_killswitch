@@ -156,7 +156,49 @@ Measurements were taken only at start and on a logind signal (end of idle,
 unlocking); measuring continuously would mean opening the microphone
 continuously. That occasion mechanism has been removed -- see "Decided".
 
-## Traps while building the indicator
+## Why the icons are a phosh plugin now (17.9.2026)
+
+The icons were a layer-shell strip of our own, pinned 104 logical px from the
+right edge -- far enough clear of location, battery and percentage, which is
+what stood there when that number was measured. Then a battery time appeared
+in the same row (`furios_misc/phosh-battery-time`), the indicators grew about
+50 px to the left, and the icons sat on top of them.
+
+That number could not be fixed, only moved. A surface of ours has no way to
+ask how wide phosh's indicators are: there is no protocol for it, the
+contents come and go with a revealer each (Wi-Fi, VPN, connectivity, docked,
+a language label), and the left-hand side is no better - the clock and the
+network icons live there. Any margin is right until the bar's contents change.
+
+phosh's own box is the answer, and it costs one C file. `PhoshStatusIconsBox`
+sorts `PhoshStatusIcon`s by priority and puts a plain widget -- which is what
+this plugin is -- at the very start, left of every icon. So the icons stand at
+the left end of the indicators, the box gives them their width, everything
+else moves over, and an overlap is not a thing that can happen. Two things
+came free with it: no input region to get right (it is the shell's own
+surface), and the lock screen shows them for the same reason the shell's own
+icons show there.
+
+**Switched on with a setting, found at start.** phosh loads what
+`mobi.phosh.shell.plugins status-icons` lists, and follows that list while it
+runs -- taking the name out makes the icons go immediately, measured on the
+device. But the *modules* are scanned once, when the shell starts, so a plugin
+installed now is found at the next boot and not before. `mobi.phosh.Shell.service`
+is `RefuseManualStart`/`RefuseManualStop`, and killing the shell takes the
+session with it (`OnFailure=gnome-session-shutdown.target`,
+`replace-irreversibly`), so there is no shortcut.
+
+**What the plugin may do.** It runs inside phosh. It reads two small sysfs
+attributes on a timer and shows or hides two images; every failure is "show
+nothing", and only the exact byte the driver writes counts as engaged. A file
+it could not read, or one holding something else, must never light a privacy
+icon -- it would be on half the time and right by accident.
+
+## Traps while building the indicator (history)
+
+The strip below is gone, replaced by the plugin above. Kept because it cost
+days, and because the next layer-shell surface in this project will meet the
+same three traps.
 
 **Layer `TOP` is not enough.** A layer-shell window on `TOP` is mapped, reports
 a correct size and position -- and is invisible all the same, because phosh's
@@ -342,8 +384,9 @@ Anybody who does want a number takes it by hand:
 killswitch-indicator mic-check         # measure once; opens the microphone briefly
 ```
 
-The icons appear right-aligned, to the left of location, battery and
-percentage. Where a switch is free, nothing is shown.
+The icons appear at the left end of phosh's indicators, in front of whatever
+else stands there. Where a switch is free, nothing is shown -- not an empty
+widget either, which would push the row over by the box's 8 px spacing.
 
 ## What the network switch may switch off as well
 
@@ -373,8 +416,8 @@ NetworkManager allows that session to switch without a password
 ## The interface
 
 The **Switches** tab in the app `misc-de` shows all three switches, turns the
-indicator on and off, remembers that across a reboot and offers the choice at
-the top. It appears only where this tool is installed.
+icons on and off (that is phosh's plugin list, and it takes effect at once)
+and offers the choice at the top. It appears only where this tool is installed.
 
 ## How it works
 
@@ -394,11 +437,11 @@ killswitch-indicator run --interval 10
 # or permanently in the unit: FURIOS_KILLSWITCH_INTERVAL=10
 ```
 
-The icon is a layer-shell window on the `OVERLAY` layer with an empty input
-region -- so it catches no touch, in particular not the swipe that opens the
-quick settings. The region is set while drawing and not at `realize`: from
-there it does not reach the compositor, and the strip lies across the whole
-width of the bar.
+That interval is the daemon's, and it is now about the extra radios. The icons
+have one of their own, in the plugin, for the same reason and with the same
+default -- `FURIOS_KILLSWITCH_INTERVAL` is read by both.
 
-It is visible on the lock screen as well, in the same place and without
-covering anything: so you can tell without unlocking that a switch is engaged.
+The icons are a widget in phosh's own indicator box (`phosh-plugin/`), not a
+surface of ours -- see "Why the icons are a phosh plugin now". They are visible
+on the lock screen as well, because the top bar is: so you can tell without
+unlocking that a switch is engaged.

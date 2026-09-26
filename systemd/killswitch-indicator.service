@@ -1,9 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 misc-de
 # SPDX-License-Identifier: MIT
 [Unit]
-Description=Status-bar icon while a hardware kill switch is engaged
+Description=Acts on the FLX1 hardware kill switches (the icons are a phosh plugin)
 Documentation=file:%h/.local/share/doc/killswitch-indicator/README.md
-# The icon is drawn into phosh's top bar, so wait for a top bar to exist.
+# Nothing is drawn here any more - the icons are a phosh plugin. This still
+# belongs to the session: it is the session that ends when the phone is handed
+# over, and what it switches (Wi-Fi, Bluetooth) is switched back then too.
 # Same ordering the shipped assistant-button listener uses.
 After=sm.puri.Phosh.service
 PartOf=graphical-session.target

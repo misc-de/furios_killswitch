@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 misc-de
 # SPDX-License-Identifier: MIT
-"""Show a status-bar icon while a hardware kill switch is engaged.
+"""Follow the FLX1's hardware kill switches, and act on what they do.
 
 The FuriPhone FLX1 has two sliding switches wired to GPIO 51 (camera) and
 GPIO 52 (cellular). FuriLabs' own `custom_keys` kernel driver exports their
@@ -13,7 +13,13 @@ without root because Android's `system` UID 1000 is the host's `furios`.
 
 Nothing on the FuriOS side displays this state: there is no rfkill device for
 the switches, and phosh's top bar keeps showing cellular bars from the last
-known modem state. That is the gap this fills.
+known modem state. That is the gap this project fills - the icons themselves
+are a phosh plugin now, in phosh-plugin/, because only a widget inside the
+shell's own indicator box can be laid out with everything else in it.
+
+What is left in this program is what a plugin has no business doing: taking
+the extra radios down with the network switch and bringing them back, saying
+in the journal when a switch moved, and answering `status` for the app.
 """
 import argparse
 import array
@@ -21,6 +27,7 @@ import configparser
 import json
 import math
 import os
+import queue
 import signal
 import subprocess
 import sys
@@ -31,12 +38,14 @@ import wave
 
 BASE = os.environ.get("FURIOS_KILLSWITCH_BASE", "/sys/devices/platform/custom-keys")
 
-# (sysfs attribute, icon shown while engaged, human label)
+# (sysfs attribute, human label)
 # Attribute reads "1" when the switch lets the hardware work and "0" when it
 # is engaged -- the driver logs the same as "pressed: 0" on the falling edge.
+# Which icon stands for which switch is the plugin's business, and is written
+# down once, in phosh-plugin/killswitch-icons.c.
 SWITCHES = [
-    ("cam_switch", "camera-disabled-symbolic", "Kamera"),
-    ("nwk_switch", "network-cellular-disabled-symbolic", "Mobilfunk"),
+    ("cam_switch", "Camera"),
+    ("nwk_switch", "Cellular"),
 ]
 ENGAGED = "0"
 
@@ -120,6 +129,63 @@ RADIOS = {
 }
 
 
+# The icons are a phosh plugin (phosh-plugin/), and phosh loads what this
+# list names. Editing it is the on/off switch for them: taking the name out
+# makes them go at once, because the shell follows the list while it runs.
+# Putting it in works the same way, as long as the shell has scanned the
+# module - that scan happens once, at its start, so a fresh install shows up
+# at the next boot and not before.
+PLUGIN_ID = "furios-killswitch"
+PLUGIN_SCHEMA = "mobi.phosh.shell.plugins"
+PLUGIN_KEY = "status-icons"
+
+
+def _plugin_settings():
+    """phosh's plugin list, or None where there is no phosh.
+
+    Looked up before it is opened: Gio.Settings.new() on a schema that is not
+    installed does not raise, it aborts the process.
+    """
+    from gi.repository import Gio
+    source = Gio.SettingsSchemaSource.get_default()
+    if source is None or source.lookup(PLUGIN_SCHEMA, True) is None:
+        return None
+    return Gio.Settings.new(PLUGIN_SCHEMA)
+
+
+def icons_listed():
+    """True/False, or None when phosh's schema is not there to be asked."""
+    settings = _plugin_settings()
+    if settings is None:
+        return None
+    return PLUGIN_ID in settings.get_strv(PLUGIN_KEY)
+
+
+def set_icons(enabled):
+    """Add or remove our own entry, and only ours.
+
+    The list is the shell's, and somebody else's plugin in it is none of our
+    business - so it is read, changed and written back, never written out
+    from scratch.
+    """
+    settings = _plugin_settings()
+    if settings is None:
+        return False
+    names = settings.get_strv(PLUGIN_KEY)
+    if enabled and PLUGIN_ID not in names:
+        names.append(PLUGIN_ID)
+    elif not enabled and PLUGIN_ID in names:
+        names = [n for n in names if n != PLUGIN_ID]
+    else:
+        return True
+    settings.set_strv(PLUGIN_KEY, names)
+    # dconf is written from an idle callback, and this process is usually
+    # about to end: a setting that arrives after the answer is no answer.
+    from gi.repository import Gio
+    Gio.Settings.sync()
+    return True
+
+
 def load_config():
     parser = configparser.ConfigParser()
     parser.read(CONFIG_FILE)
@@ -153,25 +219,13 @@ def save_state(state):
         json.dump(state, handle)
     os.replace(tmp, STATE_FILE)
 
-BAR_HEIGHT = 32          # logical px; phosh's top bar, icons centred inside it
-# Right-aligned, but clear of what phosh already puts there: location, battery
-# and the percentage occupy roughly the rightmost 90 logical px.
-RIGHT_MARGIN = 104
-ICON_SIZE = 16           # matches the size phosh uses for its own indicators
 # Measured on the device: the driver does NOT call sysfs_notify(). poll() on
 # the attributes stayed silent through a full switch cycle while the value
 # provably changed, so this timer is not a safety net -- it is the only source
-# of updates, and the interval is the delay before the icon appears.
+# of updates, and the interval is the delay before the network switch reaches
+# the extra radios.
 # At 2 s it costs 0.0154 % of one core, i.e. 13.3 s of CPU time per day.
 DEFAULT_INTERVAL_S = 2
-
-CSS = b"""
-#killswitch-box { background: transparent; }
-#killswitch-box image {
-    color: #ffb648;
-    -gtk-icon-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
-}
-"""
 
 
 def read_switch(name):
@@ -235,10 +289,6 @@ def measure_microphone(seconds=MIC_MEASURE_S):
             pass
 
 
-def engaged_switches():
-    return [(n, i, l) for n, i, l in SWITCHES if read_switch(n) == ENGAGED]
-
-
 def radio_state(radio):
     """True/False, or None when the service behind it is not reachable."""
     from gi.repository import Gio, GLib
@@ -282,20 +332,63 @@ def apply_network_extras(engaged, verbose=False):
     state = load_state()
     ours = set(state.get("we_disabled", []))
     for radio in RADIOS:
-        if not config_enabled(config, radio):
+        # The option decides what is taken DOWN. What comes back is decided
+        # by what we took down: an option switched off while the switch was
+        # engaged would otherwise leave that radio off for good, with its
+        # name in state.json and nothing left that would ever read it.
+        if not config_enabled(config, radio) and radio not in ours:
             continue
         if engaged:
+            if not config_enabled(config, radio):
+                continue
             if radio_state(radio) is True and set_radio(radio, False):
                 ours.add(radio)
                 if verbose:
-                    print(f"{radio}: ausgeschaltet (Netzschalter)", flush=True)
+                    print(f"{radio}: switched off (network switch)", flush=True)
         elif radio in ours:
             if set_radio(radio, True):
                 ours.discard(radio)
                 if verbose:
-                    print(f"{radio}: wieder eingeschaltet", flush=True)
+                    print(f"{radio}: switched back on", flush=True)
     state["we_disabled"] = sorted(ours)
     save_state(state)
+
+
+# One worker for the extra radios, and the moves of the switch go to it in
+# the order they happened. A thread per move let two of them run at once when
+# the switch went down and up again while the first was still waiting on
+# D-Bus: both read state.json before either wrote it, the later write threw
+# away the radio the other one had switched off, and both wrote through the
+# same temporary file. Wi-Fi then stayed off with the switch free, and nothing
+# remembered that it was ours to bring back.
+_network_jobs = None
+
+
+def _network_worker(jobs):
+    while True:
+        engaged, verbose = jobs.get()
+        try:
+            apply_network_extras(engaged, verbose)
+        except Exception as err:                 # noqa: BLE001
+            # The worker is the only one there is: it must outlive a surprise
+            # in one move, or every later move would go unanswered.
+            print(f"network switch: {err!r}", file=sys.stderr, flush=True)
+        finally:
+            jobs.task_done()
+
+
+def queue_network_extras(engaged, verbose=False):
+    """Hand one move of the network switch to the worker, without waiting.
+
+    Called from the main loop only, so starting the worker needs no lock.
+    """
+    global _network_jobs
+    if _network_jobs is None:
+        _network_jobs = queue.Queue()
+        threading.Thread(target=_network_worker, args=(_network_jobs,),
+                         daemon=True).start()
+    _network_jobs.put((engaged, verbose))
+    return _network_jobs
 
 
 CAMERA_CACHE = os.path.join(CONFIG_DIR, "cameras.json")
@@ -326,26 +419,40 @@ def list_cameras(refresh=False):
                for line in out.splitlines() if line.strip().startswith("Facing:")]
     if not facings:
         return None
-    try:
-        os.makedirs(CONFIG_DIR, exist_ok=True)
-        with open(CAMERA_CACHE, "w") as handle:
-            json.dump(facings, handle)
-        _give_back(CONFIG_DIR)
-        _give_back(CAMERA_CACHE)
-    except OSError:
-        pass
+    write_camera_cache(facings)
     return facings
 
 
-def _give_back(path):
-    """Hand a file written under sudo back to the user it belongs to."""
-    uid = os.environ.get("SUDO_UID")
-    gid = os.environ.get("SUDO_GID")
-    if uid and gid and os.geteuid() == 0:
-        try:
-            os.chown(path, int(uid), int(gid))
-        except OSError:
-            pass
+def write_camera_cache(facings):
+    """Write the camera list into the user's config - as that user.
+
+    This runs under sudo, and the directory belongs to the user and to every
+    program the user runs. Written as root and chown()ed back afterwards, a
+    symlink planted there as cameras.json (or as the directory) was followed
+    by root: whatever it pointed at was overwritten, and then handed to the
+    user - /etc/shadow included. So the privileges go first, and the kernel
+    checks the write as it would for the user; the link at the end of the
+    path is refused either way.
+    """
+    uid, gid = os.environ.get("SUDO_UID"), os.environ.get("SUDO_GID")
+    drop = bool(uid and gid) and os.geteuid() == 0
+    try:
+        if drop:
+            os.setegid(int(gid))
+            os.seteuid(int(uid))
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        fd = os.open(CAMERA_CACHE,
+                     os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+                     0o644)
+        with os.fdopen(fd, "w") as handle:
+            json.dump(facings, handle)
+        return True
+    except (OSError, ValueError):
+        return False
+    finally:
+        if drop:
+            os.seteuid(0)
+            os.setegid(0)
 
 
 def camera_hal_running():
@@ -370,10 +477,27 @@ def cmd_cameras(args):
         return 1
     print(f"{len(cams)} cameras, all of them affected by the switch:")
     for index, facing in enumerate(cams):
-        seite = {"Back": "Rueckseite", "Front": "Vorderseite"}.get(facing, facing)
-        print(f"  Kamera {index}: {seite}")
+        side = {"Back": "back", "Front": "front"}.get(facing, facing)
+        print(f"  Camera {index}: {side}")
     print("The switch stops camerahalserver - that always applies to all "
           "cameras at once, one alone is not possible.")
+    return 0
+
+
+def cmd_icons(args):
+    """Whether phosh is told to load the icons - and turn that around."""
+    if args.value is None:
+        listed = icons_listed()
+        print("unknown (no phosh here)" if listed is None
+              else "on" if listed else "off")
+        return 1 if listed is None else 0
+    if not set_icons(args.value == "on"):
+        print("phosh's plugin list is not available here.", file=sys.stderr)
+        return 1
+    print(args.value)
+    if args.value == "on":
+        print("If they do not appear: phosh looks for new plugins only when "
+              "it starts, so a fresh install shows up at the next boot.")
     return 0
 
 
@@ -399,7 +523,8 @@ def cmd_status(args):
         config = load_config()
         state = load_state()
         data = {
-            "switches": {name: read_switch(name) for name, _i, _l in SWITCHES},
+            "switches": {name: read_switch(name) for name, _label in SWITCHES},
+            "icons": icons_listed(),
             "network_extras": {r: config_enabled(config, r) for r in RADIOS},
             "radios": {r: radio_state(r) for r in RADIOS},
             "we_disabled": state.get("we_disabled", []),
@@ -409,7 +534,7 @@ def cmd_status(args):
         print(json.dumps(data, indent=2))
         return 0
     missing = False
-    for name, _, label in SWITCHES:
+    for name, label in SWITCHES:
         value = read_switch(name)
         if value is None:
             print(f"{name}: not readable ({os.path.join(BASE, name)})")
@@ -419,141 +544,62 @@ def cmd_status(args):
     return 1 if missing else 0
 
 
-class Indicator:
-    """A click-through layer-shell strip drawn inside the top bar."""
+class Watcher:
+    """Follows the two readable switches and acts on what they do.
+
+    It draws nothing. The icons in the top bar are a phosh plugin now (see
+    phosh-plugin/), which is what let them stop overlapping whatever else the
+    shell puts there - a strip of our own could only pin them a fixed
+    distance from an edge, and the bar's contents move.
+
+    What is left here is the part that is not display: switching the extra
+    radios off with the network switch and back on again, and saying in the
+    journal when a switch moved.
+    """
 
     def __init__(self, verbose=False, interval=DEFAULT_INTERVAL_S):
-        import gi
-        gi.require_version("Gtk", "3.0")
-        gi.require_version("GtkLayerShell", "0.1")
-        from gi.repository import Gtk, GLib, GtkLayerShell
-        import cairo
+        import gi                              # noqa: F401  (GLib needs it)
+        from gi.repository import GLib
         try:                                     # GLib.unix_fd_add_full is deprecated
             from gi.repository import GLibUnix
             self.fd_add = GLibUnix.fd_add_full
         except (ImportError, ValueError):
             self.fd_add = GLib.unix_fd_add_full
 
-        self.Gtk, self.GLib, self.GtkLayerShell, self.cairo = Gtk, GLib, GtkLayerShell, cairo
+        self.GLib = GLib
         self.verbose = verbose
         self.interval = interval
         self.state = {}
-        # Whether the compositor has been told that this strip takes no touch.
-        # False until a draw has actually pushed it - see on_draw.
-        self.input_region_set = False
-
-        self.win = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
-        self.win.set_app_paintable(True)
-        screen = self.win.get_screen()
-        visual = screen.get_rgba_visual()
-        if visual is not None:
-            self.win.set_visual(visual)
-
-        GtkLayerShell.init_for_window(self.win)
-        # OVERLAY, not TOP: phosh's own top bar sits on TOP and is drawn over
-        # anything else there, which leaves the icon invisible. Verified on the
-        # device -- on TOP the window maps and reports a size, and still cannot
-        # be seen in a screenshot.
-        GtkLayerShell.set_layer(self.win, GtkLayerShell.Layer.OVERLAY)
-        for edge in (GtkLayerShell.Edge.TOP, GtkLayerShell.Edge.LEFT, GtkLayerShell.Edge.RIGHT):
-            GtkLayerShell.set_anchor(self.win, edge, True)
-        # -1: reserve no space of our own and do not get pushed below the bar
-        # that already reserves some.
-        GtkLayerShell.set_exclusive_zone(self.win, -1)
-        GtkLayerShell.set_namespace(self.win, "killswitch-indicator")
-
-        self.box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        self.box.set_name("killswitch-box")
-        self.box.set_halign(Gtk.Align.END)
-        self.box.set_margin_end(RIGHT_MARGIN)
-        self.box.set_valign(Gtk.Align.CENTER)
-        self.win.set_size_request(-1, BAR_HEIGHT)
-        self.win.add(self.box)
-
-        provider = Gtk.CssProvider()
-        provider.load_from_data(CSS)
-        Gtk.StyleContext.add_provider_for_screen(
-            screen, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-
-        self.icons = {}
-        for name, icon, _label in SWITCHES:
-            image = Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.MENU)
-            image.set_pixel_size(ICON_SIZE)
-            image.set_no_show_all(True)          # visibility is ours to decide
-            self.box.pack_start(image, False, False, 0)
-            self.icons[name] = image
-
-        # No third icon: the microphone switch is not read here, by choice --
-        # see the note at the top.
-
-        # Not "realize" - see on_draw. The window is anchored across the
-        # whole width of the top bar, so getting this wrong takes the swipe
-        # to the quick settings with it.
-        self.win.connect("draw", self.on_draw)
-        self.win.connect("map-event", self.on_map_event)
-        self.win.connect("size-allocate", self.on_size_allocate)
-        self.win.connect("destroy", Gtk.main_quit)
-        self.win.show_all()
+        self.loop = GLib.MainLoop()
         self.refresh(initial=True)
         self.watch()
         self.forget_stale_mic_state()
 
-    def on_draw(self, _widget, _cr):
-        """Let every touch through: an empty input region.
+    def run(self):
+        self.loop.run()
 
-        Without this the strip swallows the swipe that opens phosh's quick
-        settings, right where people reach for it - the window is anchored
-        left AND right, so it lies across the whole top bar.
-
-        From `realize`, where this used to sit, it did nothing at all. Traced
-        on the device with WAYLAND_DEBUG=1 on 15.09.2026: the strip went up
-        with `wl_surface.set_input_region(nil)`, and nil is Wayland for "all
-        of me takes input". Two reasons, and either one is enough - the
-        surface a region is set on at realize time is not the one the window
-        ends up with (gtk-layer-shell swaps it for a layer surface before the
-        window maps), and GDK pushes the region to the compositor only while
-        it paints, so a call at any other moment sits in a field nobody
-        sends. Set from here, the same call arrives as an empty wl_region -
-        `create_region`, no `add`, `set_input_region` - which is the strip
-        saying it wants no touch at all.
-
-        Once per surface, not per frame: re-armed by whatever can lose it.
-        """
-        if not self.input_region_set:
-            gdk_window = self.win.get_window()
-            if gdk_window is not None:
-                gdk_window.input_shape_combine_region(self.cairo.Region(), 0, 0)
-                self.input_region_set = True
-                if self.verbose:
-                    print("input region emptied - the strip accepts no "
-                          "Beruehrung an", flush=True)
-        return False
-
-    def on_map_event(self, _widget, _event):
-        """A new surface may carry no region of ours; the next draw sets it."""
-        self.input_region_set = False
-        return False
-
-    def on_size_allocate(self, _widget, _allocation):
-        """The strip changes width when an icon comes or goes. The region is
-        empty either way, but it costs one commit to be sure of it."""
-        self.input_region_set = False
+    def quit(self):
+        self.loop.quit()
 
     def refresh(self, initial=False):
-        for name, _icon, label in SWITCHES:
+        for name, _label in SWITCHES:
             value = read_switch(name)
+            if value is None:
+                # Not an answer, and certainly not "free": read as free, one
+                # failed read with the network switch engaged would switch
+                # Wi-Fi back on, and the next good read off again. The last
+                # position stands until the switch can be read again.
+                continue
             locked = value == ENGAGED
             if initial or self.state.get(name) != locked:
                 self.state[name] = locked
-                self.icons[name].set_visible(locked)
                 if not initial:
                     print(f"{name}: {'ENGAGED' if locked else 'free'}", flush=True)
                     if name == "nwk_switch":
-                        # In a thread: the D-Bus calls can take seconds, and
-                        # the bar must not stand still while they do.
-                        threading.Thread(
-                            target=apply_network_extras,
-                            args=(locked, self.verbose), daemon=True).start()
+                        # Off the main loop: the D-Bus calls can take seconds,
+                        # and nothing else here should stand still while they
+                        # do. One worker, so the moves stay in order.
+                        queue_network_extras(locked, self.verbose)
                 elif self.verbose:
                     print(f"{name}: {'ENGAGED' if locked else 'free'}", flush=True)
         return True
@@ -562,11 +608,10 @@ class Indicator:
         """Wake on sysfs when the driver notifies, and on a timer regardless.
 
         Whether the driver calls sysfs_notify() cannot be told by inspection,
-        so both paths are wired up. If it does, the icon appears instantly and
-        the timer finds nothing left to do; if it does not, the timer is what
-        makes this work at all.
+        so both paths are wired up. It does not - measured on the device - so
+        the timer is not a safety net here, it is the only source of updates.
         """
-        for name, _icon, _label in SWITCHES:
+        for name, _label in SWITCHES:
             try:
                 fd = os.open(os.path.join(BASE, name), os.O_RDONLY)
             except OSError as err:
@@ -599,6 +644,7 @@ class Indicator:
         return True
 
 
+
 def cmd_mic_check(_args):
     """Measure once, by hand, and report.
 
@@ -608,25 +654,25 @@ def cmd_mic_check(_args):
     """
     result = measure_microphone()
     if result is None:
-        print("Messung fehlgeschlagen (laeuft PipeWire, gibt es droid-source?)")
+        print("Measurement failed (is PipeWire running, is there a droid-source?)")
         return 1
     median, peak = result
     locked = classify_microphone(median)
     print(f"median RMS {median:.2f}  peak {peak}")
     print("Microphone: " + {True: "ENGAGED", False: "free",
-                          None: "Messung unbrauchbar"}[locked])
+                          None: "measurement unusable"}[locked])
     print(f"(threshold: median < {MIC_MAX_MEDIAN} counts as engaged; "
-          f"unter {MIC_MIN_MEDIAN} als Fehlmessung)")
+          f"below {MIC_MIN_MEDIAN} is a failed measurement)")
     print("Holds only for these three seconds: the switch announces itself "
           "nowhere, and there is no icon for it.")
     return 0 if locked is not None else 1
 
 
 def cmd_run(args):
-    indicator = Indicator(verbose=args.verbose, interval=args.interval)
-    signal.signal(signal.SIGTERM, lambda *_: indicator.Gtk.main_quit())
-    signal.signal(signal.SIGINT, lambda *_: indicator.Gtk.main_quit())
-    indicator.Gtk.main()
+    watcher = Watcher(verbose=args.verbose, interval=args.interval)
+    signal.signal(signal.SIGTERM, lambda *_: watcher.quit())
+    signal.signal(signal.SIGINT, lambda *_: watcher.quit())
+    watcher.run()
     return 0
 
 
@@ -638,16 +684,18 @@ def main():
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("-v", "--verbose", action="store_true",
                         default=argparse.SUPPRESS,
-                        help="jede Zustandsaenderung nach stdout melden")
+                        help="report every change of state on stdout")
     common.add_argument("--interval", type=int, default=argparse.SUPPRESS,
-                        metavar="SEK",
+                        metavar="SECONDS",
                         help=f"seconds between checks "
-                             f"(Vorgabe {DEFAULT_INTERVAL_S}); hoehere Werte "
-                             f"make the icon appear correspondingly later")
+                             f"(default {DEFAULT_INTERVAL_S}); a higher value is "
+                             f"how much later the extra radios follow the "
+                             f"switch")
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0],
                                      parents=[common])
     sub = parser.add_subparsers(dest="command")
-    sub.add_parser("run", parents=[common], help="show the icon (default)")
+    sub.add_parser("run", parents=[common],
+                   help="follow the switches, in the background (default)")
     st = sub.add_parser("status", parents=[common],
                         help="print the switch positions and exit")
     st.add_argument("--json", action="store_true",
@@ -659,10 +707,14 @@ def main():
                          help="show which cameras the switch affects")
     cam.add_argument("--refresh", action="store_true",
                      help="fetch the list from the Android side again (needs root)")
+    ico = sub.add_parser("icons", parents=[common],
+                         help="whether phosh shows the icons in the top bar")
+    ico.add_argument("value", nargs="?", choices=("on", "off"),
+                     help="leave out to see what is set")
     cfg = sub.add_parser("config", parents=[common],
                          help="set what the network switch switches off as well")
     cfg.add_argument("radio", nargs="?", choices=sorted(RADIOS),
-                     help="wifi oder bluetooth")
+                     help="wifi or bluetooth")
     cfg.add_argument("value", nargs="?", choices=("on", "off"),
                      help="on = switch it off as well, off = leave it alone")
     args = parser.parse_args()
@@ -671,7 +723,7 @@ def main():
                             int(os.environ.get("FURIOS_KILLSWITCH_INTERVAL",
                                                DEFAULT_INTERVAL_S)))
     if args.interval < 1:
-        print("--interval muss mindestens 1 Sekunde sein.", file=sys.stderr)
+        print("--interval must be at least 1 second.", file=sys.stderr)
         return 2
     if args.command == "status":
         return cmd_status(args)
@@ -681,6 +733,8 @@ def main():
         return cmd_cameras(args)
     if args.command == "config":
         return cmd_config(args)
+    if args.command == "icons":
+        return cmd_icons(args)
     return cmd_run(args)
 
 
