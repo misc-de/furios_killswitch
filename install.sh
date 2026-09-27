@@ -57,16 +57,15 @@ install -m 0644 "$SRC/systemd/killswitch-indicator.service" "$UNIT/killswitch-in
 install -m 0644 "$SRC/README.md" "$SRC/FINDINGS.md" "$DOC/"
 
 systemctl --user daemon-reload
-systemctl --user enable killswitch-indicator.service
-# restart, not just start: on a reinstall the service is already running and
-# would otherwise carry on with the old version.
-systemctl --user restart killswitch-indicator.service
+# Not enabled and not started: after an installation everything is off until
+# somebody switches it on (the app's switch, or the command printed below).
+# try-restart only touches a daemon that is already running, so a reinstall
+# over one somebody switched on hands it the new version.
+systemctl --user try-restart killswitch-indicator.service
 
-echo "4) switching the icons on"
-# Through the tool, not by editing the list here: it reads phosh's list,
-# adds our own name to it and writes it back, so a plugin of somebody else's
-# in the same list survives. Same command the app and uninstall.sh use.
-"$BIN/killswitch-indicator" icons on
+# The icons stay as they are: off after a first installation, and whatever
+# somebody chose on a reinstall. Switching them on goes through the tool, not
+# by editing phosh's list here - it may hold somebody else's plugin.
 
 echo
 echo "Installed. State:"
@@ -81,6 +80,8 @@ echo
 # And there is no shortcut: mobi.phosh.Shell.service is RefuseManualStart and
 # RefuseManualStop, and taking the shell down by hand takes the whole session
 # with it - OnFailure=gnome-session-shutdown.target, replace-irreversibly.
+echo "An installation switches nothing on. To show the icons and run the daemon:"
+echo "    \"$BIN/killswitch-indicator\" icons on"
+echo "    systemctl --user enable --now killswitch-indicator.service"
 echo "The icons appear after the next reboot: phosh looks for plugins only"
 echo "when it starts, and its unit refuses to be restarted on its own."
-echo "The daemon - the extra radios on the network switch - is running now."

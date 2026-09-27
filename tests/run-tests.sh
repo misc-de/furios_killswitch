@@ -205,10 +205,13 @@ check "and the tool switches that same name on" "$id_in_plugin" "$id_in_tool"
 # somebody else's plugin.
 check "icons is offered" "yes" \
     "$("$PROG" --help | grep -q ' icons ' && echo yes || echo no)"
-for script in install uninstall; do
-    check "$script.sh goes through the tool" "1" \
-        "$(grep -c 'killswitch-indicator" icons' "$SRC/$script.sh")"
-done
+check "uninstall.sh goes through the tool" "1" \
+    "$(grep -c 'killswitch-indicator" icons' "$SRC/uninstall.sh")"
+# After an installation everything is off until somebody switches it on.
+check "install.sh switches no icons on" "0" \
+    "$(grep -v '^ *echo' "$SRC/install.sh" | grep -c 'icons on')"
+check "and enables no unit" "0" \
+    "$(grep -v '^ *echo' "$SRC/install.sh" | grep -Ec 'systemctl --user (enable|start|restart) ')"
 
 # 47: reading the setting is allowed to answer "no phosh here" - the tests
 # run on machines that have none, and must never write the real list.

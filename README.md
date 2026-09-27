@@ -41,9 +41,14 @@ If you do want a reading, take one by hand with
 
     ./install.sh        # without sudo
 
-Builds the plugin, puts it where phosh looks for plugins, adds it to the
-shell's list, and installs the daemon into `~/.local/bin` with a systemd user
-unit. Remove both again with `./uninstall.sh`.
+Builds the plugin, puts it where phosh looks for plugins, and installs the
+daemon into `~/.local/bin` with a systemd user unit - and switches nothing on.
+Turn it on in the app, or with
+
+    killswitch-indicator icons on
+    systemctl --user enable --now killswitch-indicator.service
+
+Remove both again with `./uninstall.sh`.
 
 **The icons appear after the next reboot.** phosh scans its plugin directory
 once, when it starts, and its unit refuses to be restarted on its own —
