@@ -40,11 +40,24 @@ if [ ${#missing[@]} -gt 0 ]; then
     exit 1
 fi
 
+# DESTDIR, as in make: a staged root instead of /, for the tests.
+DESTDIR=${DESTDIR:-}
+PLUGIN_DIR=$(pkg-config --variable=status_icons_plugins_dir phosh-plugins)
+
+# Before anything is written, what the phone had: every path this project
+# writes (here and later, from the daemon and the app's switches), whether it
+# was there, and which directories above them were missing. Taken once - a
+# reinstall finds the record and keeps it - and read back by uninstall.sh.
+# phosh's plugin list is recorded separately, when the icons are switched on
+# for the first time: that is its first change. See "The original state" in killswitch-indicator.
+DESTDIR="$DESTDIR" python3 "$SRC/killswitch-indicator" original record \
+    --plugin-dir "$PLUGIN_DIR"
+
 echo "1) building the icons"
 make -C "$SRC/phosh-plugin" all
 
 echo "2) installing them where phosh looks"
-sudo make -C "$SRC/phosh-plugin" install
+sudo make -C "$SRC/phosh-plugin" install DESTDIR="$DESTDIR"
 
 echo "3) installing the daemon"
 BIN="$HOME/.local/bin"

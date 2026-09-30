@@ -205,8 +205,13 @@ check "and the tool switches that same name on" "$id_in_plugin" "$id_in_tool"
 # somebody else's plugin.
 check "icons is offered" "yes" \
     "$("$PROG" --help | grep -q ' icons ' && echo yes || echo no)"
+# uninstall.sh does it through `restore`, which takes the icons out with the
+# same function `icons off` uses - back to the list recorded before they were
+# first switched on.
 check "uninstall.sh goes through the tool" "1" \
-    "$(grep -c 'killswitch-indicator" icons' "$SRC/uninstall.sh")"
+    "$(grep -c '"$PROG" restore' "$SRC/uninstall.sh")"
+check "and edits no list of its own" "0" \
+    "$(grep -v '^ *#' "$SRC/uninstall.sh" | grep -c 'gsettings')"
 # After an installation everything is off until somebody switches it on.
 check "install.sh switches no icons on" "0" \
     "$(grep -v '^ *echo' "$SRC/install.sh" | grep -c 'icons on')"
