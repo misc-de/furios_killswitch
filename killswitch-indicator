@@ -122,12 +122,27 @@ STATE_FILE = os.path.join(CONFIG_DIR, "state.json")
 # extend its reach in software, for people who read that switch as "radios off".
 # Both default to off: a switch that silently does more than it says is worse
 # than one that does too little.
+#
+# Bluetooth goes through gnome-settings-daemon's rfkill switch, the one the
+# quick setting uses, and not through bluez's Powered: phosh shows Bluetooth
+# from BluetoothAirplaneMode, so an adapter powered down behind its back kept
+# the "on" in the bar (30.9., seen on the phone). That property is inverted -
+# airplane mode on means Bluetooth off.
 RADIOS = {
     "wifi": ("Wi-Fi", "org.freedesktop.NetworkManager", "/org/freedesktop/NetworkManager",
              "org.freedesktop.NetworkManager", "WirelessEnabled"),
-    "bluetooth": ("Bluetooth", "org.bluez", "/org/bluez/hci0",
-                  "org.bluez.Adapter1", "Powered"),
+    "bluetooth": ("Bluetooth", "org.gnome.SettingsDaemon.Rfkill",
+                  "/org/gnome/SettingsDaemon/Rfkill",
+                  "org.gnome.SettingsDaemon.Rfkill", "BluetoothAirplaneMode"),
 }
+SESSION_BUS_RADIOS = {"bluetooth"}
+INVERTED_RADIOS = {"bluetooth"}
+
+
+def _radio_bus(radio):
+    from gi.repository import Gio
+    return Gio.bus_get_sync(Gio.BusType.SESSION if radio in SESSION_BUS_RADIOS
+                            else Gio.BusType.SYSTEM, None)
 
 
 # The icons are a phosh plugin (phosh-plugin/), and phosh loads what this
@@ -511,12 +526,12 @@ def radio_state(radio):
     from gi.repository import Gio, GLib
     _label, service, path, iface, prop = RADIOS[radio]
     try:
-        bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+        bus = _radio_bus(radio)
         value = bus.call_sync(
             service, path, "org.freedesktop.DBus.Properties", "Get",
             GLib.Variant("(ss)", (iface, prop)), GLib.VariantType("(v)"),
             Gio.DBusCallFlags.NONE, 3000, None)
-        return bool(value[0])
+        return bool(value[0]) != (radio in INVERTED_RADIOS)
     except GLib.Error:
         return None
 
@@ -525,11 +540,12 @@ def set_radio(radio, enabled):
     """Switch one radio. Returns True when it went through."""
     from gi.repository import Gio, GLib
     _label, service, path, iface, prop = RADIOS[radio]
+    value = enabled != (radio in INVERTED_RADIOS)
     try:
-        bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+        bus = _radio_bus(radio)
         bus.call_sync(
             service, path, "org.freedesktop.DBus.Properties", "Set",
-            GLib.Variant("(ssv)", (iface, prop, GLib.Variant("b", enabled))),
+            GLib.Variant("(ssv)", (iface, prop, GLib.Variant("b", value))),
             None, Gio.DBusCallFlags.NONE, 5000, None)
         return True
     except GLib.Error as err:

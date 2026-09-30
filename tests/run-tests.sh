@@ -332,6 +332,20 @@ elif case == "sudo-order":
         "Out", (), {"stdout": "  Facing: Back\n"})()
     mod.list_cameras(refresh=True)
     print(",".join(calls))
+elif case == "bt-bus":
+    # What really goes over D-Bus for Bluetooth: phosh's rfkill switch on the
+    # session bus, inverted - not bluez's Powered, which the bar never sees.
+    # The preamble stubbed set_radio and radio_state - use the real ones.
+    mod = importlib.util.module_from_spec(spec); loader.exec_module(mod)
+    sent = []
+    class Bus:
+        def call_sync(self, service, path, _i, method, args, *rest):
+            sent.append((service, method, args.unpack()[-1]))
+            return (True,)
+    mod._radio_bus = lambda radio: Bus()
+    mod.set_radio("bluetooth", False)
+    state = mod.radio_state("bluetooth")
+    print("bluetooth" in mod.SESSION_BUS_RADIOS, sent[0][0], sent[0][2], state)
 PYEOF3
 }
 check "switch down and up while D-Bus is slow: Wi-Fi comes back, nothing left over" \
@@ -343,6 +357,8 @@ check "sudo cameras --refresh: a planted symlink is not followed" \
     "untouched" "$(ks_py symlink)"
 check "sudo cameras --refresh: writes as the user, and gives root back after" \
     "egid 4712,euid 4711,open,euid 0,egid 0" "$(ks_py sudo-order)"
+check "Bluetooth goes through phosh's rfkill switch, inverted" \
+    "True org.gnome.SettingsDaemon.Rfkill True False" "$(ks_py bt-bus)"
 check "mic-check speaks English" "0" "$(grep -c 'Fehlmessung' "$PROG")"
 
 # The plugin's own suite: built and loaded the way phosh loads it, then driven
