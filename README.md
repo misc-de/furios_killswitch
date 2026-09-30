@@ -3,7 +3,7 @@
 Shows an icon in the phosh status bar while one of the FuriPhone FLX1's
 hardware switches is engaged.
 
-![Status bar with both icons](doc/leiste.png)
+![Status bar with both icons](doc/status-bar.png)
 
 Without it there is nothing on screen to tell you: FuriOS creates no rfkill
 device for these switches, so the bar goes on showing the signal strength of a
