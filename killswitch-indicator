@@ -162,34 +162,245 @@ def icons_listed():
     return PLUGIN_ID in settings.get_strv(PLUGIN_KEY)
 
 
-def set_icons(enabled):
+def set_icons(enabled, report=False):
     """Add or remove our own entry, and only ours.
 
     The list is the shell's, and somebody else's plugin in it is none of our
     business - so it is read, changed and written back, never written out
     from scratch.
+
+    Before the first change the list is recorded as it was (see "The
+    original state" below), and taking our entry out again goes back to
+    exactly that: no value in dconf when there was none, the value when
+    there was one - even one that equals the default. A list somebody
+    changed since keeps their change; only our entry comes out, and with
+    `report` that is said. Without a record (the icons were switched on by a
+    version that kept none) it compares with phosh's default instead, as it
+    always did, and says that this is a guess.
     """
     settings = _plugin_settings()
     if settings is None:
         return False
+    from gi.repository import Gio
     names = settings.get_strv(PLUGIN_KEY)
-    if enabled and PLUGIN_ID not in names:
-        names.append(PLUGIN_ID)
-    elif not enabled and PLUGIN_ID in names:
-        names = [n for n in names if n != PLUGIN_ID]
-    else:
+    if enabled:
+        if PLUGIN_ID in names:
+            return True
+        record_key_original(settings)
+        settings.set_strv(PLUGIN_KEY, names + [PLUGIN_ID])
+        Gio.Settings.sync()
         return True
-    settings.set_strv(PLUGIN_KEY, names)
-    # Back to the list phosh ships with: then the key goes, rather than being
-    # kept as a copy of the default. A copy stops following the default when
-    # an update changes it, and it is not what a new phone has.
-    if settings.get_value(PLUGIN_KEY).equal(settings.get_default_value(PLUGIN_KEY)):
-        settings.reset(PLUGIN_KEY)
+    target = [n for n in names if n != PLUGIN_ID]
+    orig = load_original().get("key")
+    default = list(settings.get_default_value(PLUGIN_KEY).unpack())
+    user_value = settings.get_user_value(PLUGIN_KEY)
+    if orig and not orig.get("had_ours"):
+        before = orig["value"] if orig["set"] else default
+        if target == before:
+            if orig["set"]:
+                if user_value is None or names != before:
+                    settings.set_strv(PLUGIN_KEY, before)
+            elif user_value is not None:
+                # Back to no value at all: a copy of the default stops
+                # following the default when an update changes it, and it is
+                # not what the phone had.
+                settings.reset(PLUGIN_KEY)
+        else:
+            if target != names:
+                settings.set_strv(PLUGIN_KEY, target)
+            if report:
+                was = orig["value"] if orig["set"] else "unset (phosh's default)"
+                print(f"phosh's plugin list was changed since the icons were "
+                      f"switched on - left as it is, only our entry taken out: "
+                      f"{target}; before, it was {was}")
+    else:
+        if target == default:
+            if user_value is not None:
+                settings.reset(PLUGIN_KEY)
+        elif target != names:
+            settings.set_strv(PLUGIN_KEY, target)
+        if report and target != names:
+            print("No record of phosh's plugin list from before the icons were "
+                  "switched on - compared with phosh's default instead, "
+                  "which is a guess.")
     # dconf is written from an idle callback, and this process is usually
     # about to end: a setting that arrives after the answer is no answer.
-    from gi.repository import Gio
     Gio.Settings.sync()
     return True
+
+
+# The original state.
+#
+# Everything this project changes on the phone is written down BEFORE the
+# first change, so that uninstall.sh puts back what was there instead of what
+# a new phone probably has:
+#
+#   key      phosh's plugin list, at the first `icons on`: whether it had a
+#            value in dconf at all (unset and "set to the default" read the
+#            same through `gsettings get`, but only unset follows a later
+#            phosh's default), and which.
+#   install  at the first install.sh, before it writes anything: every path
+#            it and the daemon write - the plugin in phosh's directory, the
+#            program, the unit and its enable link, the docs, the config
+#            directory - and whether it was there, and which directories above
+#            them were missing. Only those are taken out again, and only
+#            while empty.
+#
+# Each part is taken once and never again: a reinstall, or switching the
+# icons off and on, finds it and keeps it - the phone before the FIRST change
+# is the one to go back to. uninstall.sh removes it after use.
+#
+# A path of ours already there when the install part is taken, or our entry
+# already in the list when the key part is, means a version from before these
+# records. What was there before THAT is not known: the record says so
+# ("legacy"/"had_ours"), and the uninstall does what it always did and says
+# that it is guessing.
+def _state_home():
+    """The user's state directory - even under sudo, like _config_home()."""
+    sudo_user = os.environ.get("SUDO_USER")
+    if sudo_user and os.geteuid() == 0:
+        import pwd
+        try:
+            return os.path.join(pwd.getpwnam(sudo_user).pw_dir, ".local", "state")
+        except KeyError:
+            pass
+    return os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state"))
+
+
+ORIGINAL_DIR = os.path.join(_state_home(), "furios-killswitch")
+ORIGINAL_FILE = os.path.join(ORIGINAL_DIR, "original.json")
+
+
+def load_original():
+    try:
+        with open(ORIGINAL_FILE) as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_original(data):
+    os.makedirs(ORIGINAL_DIR, exist_ok=True)
+    tmp = ORIGINAL_FILE + ".new"
+    with open(tmp, "w") as handle:
+        json.dump(data, handle, indent=1)
+    os.replace(tmp, ORIGINAL_FILE)
+
+
+def _missing_parents(path, root, stop):
+    """Directories above `path` that do not exist, deepest first."""
+    out = []
+    d = os.path.dirname(path)
+    while d and d not in (stop, "/") and not os.path.exists(root + d):
+        out.append(d)
+        d = os.path.dirname(d)
+    return out
+
+
+def record_key_original(settings):
+    """Phosh's plugin list as it is now - once, before our first change."""
+    data = load_original()
+    if "key" in data:
+        return
+    user = settings.get_user_value(PLUGIN_KEY)
+    data["key"] = {
+        "recorded": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "set": user is not None,
+        "value": list(user.unpack()) if user is not None else None,
+        "had_ours": PLUGIN_ID in settings.get_strv(PLUGIN_KEY),
+    }
+    # The directories this record itself needs, if the install part (which
+    # lists them) was never taken - a version installed before records.
+    data.setdefault("home_dirs_missing_for_record",
+                    _missing_parents(ORIGINAL_FILE, "", os.path.expanduser("~")))
+    _save_original(data)
+
+
+def original_paths(plugin_dir):
+    home = os.path.expanduser("~")
+    unit_dir = os.path.join(home, ".config", "systemd", "user")
+    system = []
+    if plugin_dir:
+        system = [os.path.join(plugin_dir, f"libphosh-plugin-{PLUGIN_ID}.so"),
+                  os.path.join(plugin_dir, f"{PLUGIN_ID}.plugin")]
+    home_paths = [
+        os.path.join(home, ".local", "bin", "killswitch-indicator"),
+        os.path.join(unit_dir, "killswitch-indicator.service"),
+        # the enable link, made by the app's switch or by hand
+        os.path.join(unit_dir, "gnome-session.target.wants",
+                     "killswitch-indicator.service"),
+        os.path.join(home, ".local", "share", "doc", "killswitch-indicator"),
+        CONFIG_DIR,
+        ORIGINAL_FILE,
+    ]
+    return system, home_paths
+
+
+def cmd_original(args):
+    """The record of the original state, for install.sh and uninstall.sh."""
+    destdir = os.environ.get("DESTDIR", "")
+    home = os.path.expanduser("~")
+    data = load_original()
+    if args.action == "record":
+        if "install" in data:
+            print(f"original state: kept the record of "
+                  f"{data['install'].get('recorded', '?')}")
+            return 0
+        system, home_paths = original_paths(args.plugin_dir)
+        sys_had = {p: os.path.lexists(destdir + p) for p in system}
+        home_had = {p: os.path.lexists(p) for p in home_paths}
+        sys_dirs, home_dirs = [], []
+        for p in system:
+            sys_dirs += [d for d in _missing_parents(p, destdir, "/") if d not in sys_dirs]
+        for p in home_paths:
+            home_dirs += [d for d in _missing_parents(p, "", home) if d not in home_dirs]
+        legacy = any(v for p, v in {**sys_had, **home_had}.items()
+                     if p != ORIGINAL_FILE)
+        data["install"] = {
+            "recorded": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "legacy": legacy,
+            "system": sys_had,
+            "home": home_had,
+            "system_dirs_missing": sorted(sys_dirs, key=lambda d: -d.count("/")),
+            "home_dirs_missing": sorted(home_dirs, key=lambda d: -d.count("/")),
+        }
+        _save_original(data)
+        print(f"original state recorded in {ORIGINAL_FILE}")
+        if legacy:
+            print("  (an earlier install was already there - what the phone "
+                  "had before that is not known)")
+        return 0
+    if args.action == "status":
+        if not data:
+            print("no record of the original state")
+            return 1
+        print(json.dumps(data, indent=1))
+        return 0
+    if args.action == "legacy":
+        inst = data.get("install")
+        return 0 if not inst or inst.get("legacy") else 1
+    if args.action == "system-dirs":
+        for d in (data.get("install") or {}).get("system_dirs_missing", []):
+            print(d)
+        return 0
+    if args.action == "finish":
+        dirs = list((data.get("install") or {}).get("home_dirs_missing", []))
+        dirs += data.get("home_dirs_missing_for_record", [])
+        for p in (ORIGINAL_FILE, ORIGINAL_FILE + ".new"):
+            try:
+                os.unlink(p)
+            except FileNotFoundError:
+                pass
+        # Deepest first, and only while empty: whatever somebody else put
+        # there since keeps the directory.
+        for d in [ORIGINAL_DIR] + sorted(set(dirs), key=lambda d: -d.count("/")):
+            try:
+                os.rmdir(d)
+            except OSError:
+                pass
+        return 0
+    return 2
 
 
 def load_config():
@@ -497,7 +708,7 @@ def cmd_icons(args):
         print("unknown (no phosh here)" if listed is None
               else "on" if listed else "off")
         return 1 if listed is None else 0
-    if not set_icons(args.value == "on"):
+    if not set_icons(args.value == "on", report=args.value == "off"):
         print("phosh's plugin list is not available here.", file=sys.stderr)
         return 1
     print(args.value)
@@ -513,8 +724,13 @@ def cmd_restore(_args):
     The radios this program switched off come back on - state.json is the
     only place that knows which they were, and it goes next - and then the
     whole config directory: options, state, camera cache and whatever
-    temporary sibling an interrupted write left. The icons are `icons off`.
+    temporary sibling an interrupted write left. And phosh's plugin list goes
+    back to what was recorded before the icons were first switched on (see
+    set_icons). The record itself stays: uninstall.sh still needs it for the
+    files, and removes it last (`original finish`).
     """
+    if set_icons(False, report=True) is False:
+        print("phosh's plugin list is not available here - left alone.")
     ours = load_state().get("we_disabled", [])
     left = [radio for radio in ours
             if radio in RADIOS and not set_radio(radio, True)]
@@ -742,6 +958,13 @@ def main():
                      help="wifi or bluetooth")
     cfg.add_argument("value", nargs="?", choices=("on", "off"),
                      help="on = switch it off as well, off = leave it alone")
+    ori = sub.add_parser("original", parents=[common],
+                         help="the record of what the phone had before the "
+                              "first install (used by install.sh/uninstall.sh)")
+    ori.add_argument("action", choices=("record", "status", "legacy",
+                                        "system-dirs", "finish"))
+    ori.add_argument("--plugin-dir", default=None,
+                     help="phosh's plugin directory (for record)")
     sub.add_parser("restore", parents=[common],
                    help="switch back on what we switched off and remove all "
                         "options and state (used by uninstall.sh)")
@@ -765,6 +988,8 @@ def main():
         return cmd_icons(args)
     if args.command == "restore":
         return cmd_restore(args)
+    if args.command == "original":
+        return cmd_original(args)
     return cmd_run(args)
 
 

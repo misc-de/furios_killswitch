@@ -48,7 +48,8 @@ Turn it on in the app, or with
     killswitch-indicator icons on
     systemctl --user enable --now killswitch-indicator.service
 
-Remove both again with `./uninstall.sh`.
+Remove both again with `./uninstall.sh`. It puts the phone back to what it
+had before - recorded then, not guessed now; see below.
 
 **The icons appear after the next reboot.** phosh scans its plugin directory
 once, when it starts, and its unit refuses to be restarted on its own —
@@ -85,6 +86,38 @@ switched back on.
 
 The **Switches** tab in the `misc-de` app shows all three switches and offers
 the same settings.
+
+## What was there before
+
+Everything this project changes is written down before the first change, in
+
+    ~/.local/state/furios-killswitch/original.json     (${XDG_STATE_HOME}/furios-killswitch)
+
+- **at the first `install.sh`**, before it writes anything: every path it and
+  the daemon write — the plugin in phosh's plugin directory, the program in
+  `~/.local/bin`, the unit and its enable link, the docs, the config
+  directory `~/.config/furios-killswitch` — whether it was there, and which
+  directories above them were missing;
+- **when the icons are switched on for the first time** (by
+  `killswitch-indicator icons on` or the app's switch, which calls it):
+  phosh's plugin list `mobi.phosh.shell.plugins status-icons` — whether it
+  had a value in dconf at all, and which. "No value" and "the default
+  written as a value" read the same through `gsettings get`, but only the
+  first follows a later phosh's default.
+
+Each part is taken once: a reinstall, or switching the icons off and on
+again, keeps it. `uninstall.sh` goes back to it: the list to no value when it
+had none (`gsettings reset`) and to exactly its value when it had one — even
+when that equals the default; only the directories that were missing are
+taken out again, and only while empty. If the list was changed since the
+icons were switched on, only our entry comes out, and that is said. Without a
+record (installed by a version that kept none) it does what it always did —
+compare the list with phosh's default — and says that this is a guess.
+`killswitch-indicator original status` shows the record.
+
+The radios the network switch took down have their own record, as before:
+`state.json` lists the ones this program switched off, and only those are
+switched back on.
 
 ## Tests
 
