@@ -123,13 +123,29 @@ check "digital silence counts as unusable" "unusable" "$(mic_verdict 0.0)"
 # nothing: a switch that quietly does more than it says is worse than one that
 # does too little.
 export XDG_CONFIG_HOME="$TMP/config"
+# config also enables or disables the user unit - never the real one here.
+mkdir -p "$TMP/bin"
+printf '#!/bin/sh\necho "$*" >> "%s/systemctl.log"\n' "$TMP" > "$TMP/bin/systemctl"
+chmod +x "$TMP/bin/systemctl"
+SAVED_PATH=$PATH
+export PATH="$TMP/bin:$PATH"
 check "default: Wi-Fi is left alone" "no" "$("$PROG" config wifi)"
 check "default: Bluetooth is left alone" "no" "$("$PROG" config bluetooth)"
 "$PROG" config wifi on >/dev/null
 check "switched on and remembered" "yes" "$("$PROG" config wifi)"
 check "the neighbouring field stays untouched" "no" "$("$PROG" config bluetooth)"
+check "an option switches the daemon on with it" \
+    "--user enable --now killswitch-indicator.service" "$(tail -n1 "$TMP/systemctl.log")"
+"$PROG" config bluetooth on >/dev/null
 "$PROG" config wifi off >/dev/null
 check "deselected again" "no" "$("$PROG" config wifi)"
+check "one option left keeps the daemon running" \
+    "--user enable --now killswitch-indicator.service" "$(tail -n1 "$TMP/systemctl.log")"
+"$PROG" config bluetooth off >/dev/null
+check "nothing selected stops the daemon" \
+    "--user disable --now killswitch-indicator.service" "$(tail -n1 "$TMP/systemctl.log")"
+check "reading the options touches no unit" "4" "$(wc -l < "$TMP/systemctl.log")"
+export PATH=$SAVED_PATH
 
 # 28: The modem deliberately does NOT appear here - the Android side stops the
 # RIL before this program learns of the switch position.

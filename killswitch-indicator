@@ -755,6 +755,34 @@ def cmd_config(args):
     config.set("network", args.radio, "yes" if args.value == "on" else "no")
     save_config(config)
     print(f"{args.radio}: {'yes' if args.value == 'on' else 'no'}")
+    return follow_daemon(config)
+
+
+UNIT = "killswitch-indicator.service"
+
+
+def follow_daemon(config):
+    """Run the daemon exactly while it has something to do.
+
+    It is the only thing that takes Wi-Fi and Bluetooth down with the switch -
+    the icons are phosh's. An option set while it is disabled would be a
+    promise nobody keeps (30.9.: both options on since the reinstall, unit
+    never enabled), and a daemon with nothing selected is only a wake-up
+    source. So the option and the unit move together.
+    """
+    wanted = any(config_enabled(config, radio) for radio in RADIOS)
+    verb = ["enable", "--now"] if wanted else ["disable", "--now"]
+    try:
+        done = subprocess.run(["systemctl", "--user", *verb, UNIT],
+                              stdout=subprocess.DEVNULL,
+                              stderr=subprocess.PIPE, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as err:
+        print(f"could not {verb[0]} {UNIT}: {err}", file=sys.stderr)
+        return 1
+    if done.returncode != 0:
+        print(f"could not {verb[0]} {UNIT}: {done.stderr.strip()}",
+              file=sys.stderr)
+        return 1
     return 0
 
 
