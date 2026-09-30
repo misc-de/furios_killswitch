@@ -115,6 +115,46 @@ settles_to (GtkWidget *widget, gboolean cam, gboolean nwk)
 }
 
 
+/* Stand-ins for phosh's radio icons: the plugin knows them by type name and
+   reads their "icon-name", and a GtkImage has one. */
+static GType
+fake_type (const char *name)
+{
+  GTypeQuery query;
+
+  g_type_query (GTK_TYPE_IMAGE, &query);
+  return g_type_register_static_simple (GTK_TYPE_IMAGE, name,
+                                        query.class_size, NULL,
+                                        query.instance_size, NULL, 0);
+}
+
+
+static GtkWidget *
+radio_icon (GType type, const char *icon)
+{
+  GtkWidget *image = g_object_new (type, "icon-name", icon, NULL);
+
+  gtk_widget_set_visible (image, TRUE);
+  return image;
+}
+
+
+/* Pump the main loop until `widget` has the visibility asked for. */
+static gboolean
+visible_settles_to (GtkWidget *widget, gboolean visible)
+{
+  gint64 deadline = g_get_monotonic_time () + 3 * G_USEC_PER_SEC;
+
+  while (g_get_monotonic_time () < deadline) {
+    if (gtk_widget_get_visible (widget) == visible)
+      return TRUE;
+    g_main_context_iteration (NULL, FALSE);
+    g_usleep (10 * 1000);
+  }
+  return FALSE;
+}
+
+
 int
 main (int argc, char *argv[])
 {
@@ -210,6 +250,58 @@ main (int argc, char *argv[])
   set_switch ("cam_switch", "0");
   check_true ("and a value without a newline still is one",
               settles_to (widget, TRUE, FALSE));
+
+  /* phosh's "Wi-Fi off" and "Bluetooth off" beside ours while the network
+     switch is engaged: they repeat what our icon says and go away - and
+     come back after, but only the ones hidden here. */
+  {
+    GType wifi_type = fake_type ("PhoshWifiInfo");
+    GType bt_type = fake_type ("PhoshBtInfo");
+    GtkWidget *box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+    GtkWidget *icons = g_object_new (type, NULL);
+    GtkWidget *wifi = radio_icon (wifi_type, "network-wireless-disabled-symbolic");
+    GtkWidget *bt = radio_icon (bt_type, "bluetooth-active-symbolic");
+    GtkWidget *elsewhere = radio_icon (wifi_type, "network-wireless-disabled-symbolic");
+    GtkWidget *other_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+
+    g_object_ref_sink (box);
+    g_object_ref_sink (other_box);
+    set_switch ("cam_switch", "1\n");
+    gtk_container_add (GTK_CONTAINER (box), icons);
+    gtk_container_add (GTK_CONTAINER (box), wifi);
+    gtk_container_add (GTK_CONTAINER (box), bt);
+    gtk_container_add (GTK_CONTAINER (other_box), elsewhere);
+
+    set_switch ("nwk_switch", "0\n");
+    check_true ("network engaged: phosh's 'Wi-Fi off' goes",
+                visible_settles_to (wifi, FALSE));
+    check_true ("a radio that still says on stays",
+                gtk_widget_get_visible (bt));
+    check_true ("the same icon outside our box (quick settings) is left alone",
+                gtk_widget_get_visible (elsewhere));
+
+    gtk_image_set_from_icon_name (GTK_IMAGE (bt), "bluetooth-disabled-symbolic",
+                                  GTK_ICON_SIZE_MENU);
+    check_true ("and 'Bluetooth off' goes once it says so",
+                visible_settles_to (bt, FALSE));
+
+    set_switch ("nwk_switch", "1\n");
+    check_true ("network released: 'Wi-Fi off' comes back",
+                visible_settles_to (wifi, TRUE));
+    check_true ("and 'Bluetooth off' too", visible_settles_to (bt, TRUE));
+
+    gtk_widget_set_visible (wifi, FALSE);
+    set_switch ("nwk_switch", "0\n");
+    check_true ("engaged again", visible_settles_to (bt, FALSE));
+    set_switch ("nwk_switch", "1\n");
+    visible_settles_to (bt, TRUE);
+    check_true ("an icon phosh hid itself is not shown by us",
+                !gtk_widget_get_visible (wifi));
+
+    gtk_widget_destroy (box);
+    g_object_unref (box);
+    g_object_unref (other_box);
+  }
 
   /* Switched off in the settings, or the panel torn down: the timer goes
      with the widget. If it did not, it would go on reading sysfs in the

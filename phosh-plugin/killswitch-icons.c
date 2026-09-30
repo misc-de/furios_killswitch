@@ -19,7 +19,9 @@
  * is read first.
  *
  * This runs in phosh's process, so it does as little as a thing can do: it
- * reads two small sysfs attributes on a timer and shows or hides two images.
+ * reads two small sysfs attributes on a timer and shows or hides two images -
+ * and, while the network switch is engaged, phosh's own "Wi-Fi off" and
+ * "Bluetooth off" icons next to them (see hide_radio_icons).
  * Every failure is "show nothing" - a shell that died over an odd byte in
  * sysfs would be a far worse bargain than a missing icon. It never writes,
  * never calls out, and holds nothing but two booleans.
@@ -81,6 +83,15 @@ static const struct {
 
 #define N_SWITCHES G_N_ELEMENTS (SWITCHES)
 
+/* Index of the network switch in SWITCHES. */
+#define NETWORK_SWITCH 1
+
+/* phosh's icons for the two radios the daemon may take down with the network
+   switch. Hidden only while they say "off": one that still shows Wi-Fi on is
+   news and stays. */
+static const char *const RADIO_TYPES[] = { "PhoshWifiInfo", "PhoshBtInfo" };
+#define HIDDEN_BY_US "furios-killswitch-hidden"
+
 
 #define FURIOS_TYPE_KILLSWITCH_ICONS (furios_killswitch_icons_get_type ())
 G_DECLARE_FINAL_TYPE (FuriosKillswitchIcons, furios_killswitch_icons, FURIOS,
@@ -125,6 +136,71 @@ read_engaged (FuriosKillswitchIcons *self, const char *attribute)
 }
 
 
+static gboolean
+is_radio_icon (GtkWidget *widget)
+{
+  const char *name = G_OBJECT_TYPE_NAME (widget);
+
+  for (gsize i = 0; i < G_N_ELEMENTS (RADIO_TYPES); i++)
+    if (g_strcmp0 (name, RADIO_TYPES[i]) == 0)
+      return TRUE;
+  return FALSE;
+}
+
+
+static gboolean
+says_off (GtkWidget *widget)
+{
+  g_autofree char *icon = NULL;
+
+  if (!g_object_class_find_property (G_OBJECT_GET_CLASS (widget), "icon-name"))
+    return FALSE;
+  g_object_get (widget, "icon-name", &icon, NULL);
+  return icon && g_str_has_suffix (icon, "-disabled-symbolic");
+}
+
+
+/*
+ * With the network switch engaged, our icon already says every radio is off;
+ * phosh's "Wi-Fi off" and "Bluetooth off" beside it only repeat that. They are
+ * hidden while the switch is engaged and brought back after - but only the
+ * ones hidden here, marked on the widget itself, so an icon phosh hid for its
+ * own reasons is never shown by us.
+ *
+ * Only our siblings in the indicator box: the quick settings use the same
+ * types, and those are not ours to touch.
+ */
+static void
+hide_radio_icons (FuriosKillswitchIcons *self, gboolean engaged)
+{
+  GtkWidget *parent = gtk_widget_get_parent (GTK_WIDGET (self));
+  g_autoptr (GList) children = NULL;
+
+  if (!GTK_IS_CONTAINER (parent))
+    return;
+
+  children = gtk_container_get_children (GTK_CONTAINER (parent));
+  for (GList *l = children; l; l = l->next) {
+    GtkWidget *child = l->data;
+    gboolean ours = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (child),
+                                                        HIDDEN_BY_US));
+
+    if (!is_radio_icon (child))
+      continue;
+
+    if (engaged && says_off (child)) {
+      if (gtk_widget_get_visible (child)) {
+        gtk_widget_set_visible (child, FALSE);
+        g_object_set_data (G_OBJECT (child), HIDDEN_BY_US, GINT_TO_POINTER (1));
+      }
+    } else if (ours) {
+      g_object_set_data (G_OBJECT (child), HIDDEN_BY_US, NULL);
+      gtk_widget_set_visible (child, TRUE);
+    }
+  }
+}
+
+
 /*
  * One look at both switches.
  *
@@ -145,6 +221,7 @@ refresh (FuriosKillswitchIcons *self)
   }
 
   gtk_widget_set_visible (GTK_WIDGET (self), any);
+  hide_radio_icons (self, gtk_widget_get_visible (self->images[NETWORK_SWITCH]));
 }
 
 
