@@ -87,6 +87,8 @@ case $verb in
         done ;;
     is-enabled) for u in "${units[@]}"; do ls "$dir"/*.wants/"$u" >/dev/null 2>&1 || exit 1; done ;;
     is-active) exit 3 ;;
+    # As the real one: prints the unit, and exits 3 while it is not running.
+    status) echo "o killswitch-indicator.service"; exit 3 ;;
 esac
 exit 0
 STUB
@@ -144,7 +146,8 @@ scenario() {
     before=$(snapshot)
     (
         sandbox_env
-        bash "$SRC/install.sh" >/dev/null 2>&1 || echo "install.sh failed" >&2
+        bash "$SRC/install.sh" >/dev/null 2>&1
+        echo $? > "$SANDBOX/install-rc"
         # Everything somebody can switch on, and what the daemon leaves while
         # it runs (it is not started: it would switch radios).
         "$HOME/.local/bin/killswitch-indicator" icons on >/dev/null 2>&1
@@ -163,6 +166,10 @@ scenario() {
             || echo "uninstall.sh failed" >&2
     )
     after=$(snapshot)
+    # The app takes a non-zero exit for a failed install and shows the whole
+    # output as an error - found on 30.9.2026 on a fresh phone.
+    check "$1: install.sh succeeds with the daemon not running" "0" \
+        "$(cat "$SANDBOX/install-rc")"
     check "$1: the icons were listed while installed" "1" "$(cat "$SANDBOX/listed")"
     check "$1: the plugin (.so and .plugin) went into phosh's directory" "2" \
         "$(cat "$SANDBOX/plugin-files")"

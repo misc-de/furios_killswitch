@@ -84,7 +84,12 @@ echo
 echo "Installed. State:"
 "$BIN/killswitch-indicator" status || true
 echo
-systemctl --user --no-pager --lines=0 status killswitch-indicator.service | head -4
+# `systemctl status` exits 3 for a unit that is not running - which is every
+# first installation, since an installation switches nothing on. Under
+# pipefail that ended the script right here with a perfectly good install
+# behind it, and the misc-de app reported the whole output as a failure.
+systemctl --user --no-pager --lines=0 status killswitch-indicator.service \
+    | head -4 || true
 echo
 # phosh scans its plugin directory once, when the shell starts. A plugin put
 # there afterwards is found by nobody until then, and the shell says so in one
