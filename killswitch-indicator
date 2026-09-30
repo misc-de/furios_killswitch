@@ -214,7 +214,7 @@ def load_state():
 
 def save_state(state):
     os.makedirs(CONFIG_DIR, exist_ok=True)
-    tmp = STATE_FILE + ".neu"
+    tmp = STATE_FILE + ".new"
     with open(tmp, "w") as handle:
         json.dump(state, handle)
     os.replace(tmp, STATE_FILE)
