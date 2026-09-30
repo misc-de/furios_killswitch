@@ -350,6 +350,12 @@ else
     fi
 fi
 
+# The invariant between install.sh and uninstall.sh, in a sandbox of its own:
+# see the file for what is stubbed and why.
+echo
+echo "== install.sh, then uninstall.sh"
+if bash "$SRC/tests/test-uninstall.sh"; then pass=$((pass+1)); else fail=$((fail+1)); fi
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

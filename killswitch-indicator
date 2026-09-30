@@ -28,6 +28,7 @@ import json
 import math
 import os
 import queue
+import shutil
 import signal
 import subprocess
 import sys
@@ -179,6 +180,11 @@ def set_icons(enabled):
     else:
         return True
     settings.set_strv(PLUGIN_KEY, names)
+    # Back to the list phosh ships with: then the key goes, rather than being
+    # kept as a copy of the default. A copy stops following the default when
+    # an update changes it, and it is not what a new phone has.
+    if settings.get_value(PLUGIN_KEY).equal(settings.get_default_value(PLUGIN_KEY)):
+        settings.reset(PLUGIN_KEY)
     # dconf is written from an idle callback, and this process is usually
     # about to end: a setting that arrives after the answer is no answer.
     from gi.repository import Gio
@@ -501,6 +507,25 @@ def cmd_icons(args):
     return 0
 
 
+def cmd_restore(_args):
+    """Everything back the way the phone shipped, for uninstall.sh.
+
+    The radios this program switched off come back on - state.json is the
+    only place that knows which they were, and it goes next - and then the
+    whole config directory: options, state, camera cache and whatever
+    temporary sibling an interrupted write left. The icons are `icons off`.
+    """
+    ours = load_state().get("we_disabled", [])
+    left = [radio for radio in ours
+            if radio in RADIOS and not set_radio(radio, True)]
+    shutil.rmtree(CONFIG_DIR, ignore_errors=True)
+    for radio in left:
+        print(f"{RADIOS[radio][0]} could not be switched back on - "
+              f"it is still off.", file=sys.stderr)
+    print("Shipped state: no options, no state, no camera cache.")
+    return 1 if left else 0
+
+
 def cmd_config(args):
     config = load_config()
     if args.radio is None:
@@ -717,6 +742,9 @@ def main():
                      help="wifi or bluetooth")
     cfg.add_argument("value", nargs="?", choices=("on", "off"),
                      help="on = switch it off as well, off = leave it alone")
+    sub.add_parser("restore", parents=[common],
+                   help="switch back on what we switched off and remove all "
+                        "options and state (used by uninstall.sh)")
     args = parser.parse_args()
     args.verbose = getattr(args, "verbose", False)
     args.interval = getattr(args, "interval",
@@ -735,6 +763,8 @@ def main():
         return cmd_config(args)
     if args.command == "icons":
         return cmd_icons(args)
+    if args.command == "restore":
+        return cmd_restore(args)
     return cmd_run(args)
 
 
