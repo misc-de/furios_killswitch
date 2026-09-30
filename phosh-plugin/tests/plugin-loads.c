@@ -251,33 +251,46 @@ main (int argc, char *argv[])
   check_true ("and a value without a newline still is one",
               settles_to (widget, TRUE, FALSE));
 
-  /* phosh's "Wi-Fi off" and "Bluetooth off" beside ours while the network
-     switch is engaged: they repeat what our icon says and go away - and
-     come back after, but only the ones hidden here. */
+  /* phosh's "Wi-Fi off", "Bluetooth off" and "no internet" while the network
+     switch is engaged: they repeat what our icon says and go away - and come
+     back after, but only the ones hidden here. Laid out as phosh does it: they
+     are not our siblings but sit in box_network left of the clock, each inside
+     a revealer, while we sit in the indicator box - both in the "top-bar". */
   {
     GType wifi_type = fake_type ("PhoshWifiInfo");
     GType bt_type = fake_type ("PhoshBtInfo");
+    GType conn_type = fake_type ("PhoshConnectivityInfo");
     GtkWidget *box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+    GtkWidget *network = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+    GtkWidget *indicators = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
     GtkWidget *icons = g_object_new (type, NULL);
     GtkWidget *wifi = radio_icon (wifi_type, "network-wireless-disabled-symbolic");
     GtkWidget *bt = radio_icon (bt_type, "bluetooth-active-symbolic");
+    GtkWidget *conn = radio_icon (conn_type, "network-offline-symbolic");
     GtkWidget *elsewhere = radio_icon (wifi_type, "network-wireless-disabled-symbolic");
     GtkWidget *other_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+    GtkWidget *revealer = gtk_revealer_new ();
 
     g_object_ref_sink (box);
     g_object_ref_sink (other_box);
+    gtk_widget_set_name (box, "top-bar");
     set_switch ("cam_switch", "1\n");
-    gtk_container_add (GTK_CONTAINER (box), icons);
-    gtk_container_add (GTK_CONTAINER (box), wifi);
-    gtk_container_add (GTK_CONTAINER (box), bt);
+    gtk_container_add (GTK_CONTAINER (box), network);
+    gtk_container_add (GTK_CONTAINER (box), indicators);
+    gtk_container_add (GTK_CONTAINER (indicators), icons);
+    gtk_container_add (GTK_CONTAINER (revealer), wifi);
+    gtk_container_add (GTK_CONTAINER (network), revealer);
+    gtk_container_add (GTK_CONTAINER (network), bt);
+    gtk_container_add (GTK_CONTAINER (network), conn);
     gtk_container_add (GTK_CONTAINER (other_box), elsewhere);
 
     set_switch ("nwk_switch", "0\n");
-    check_true ("network engaged: phosh's 'Wi-Fi off' goes",
+    check_true ("network engaged: phosh's 'Wi-Fi off' in the other box goes",
                 visible_settles_to (wifi, FALSE));
+    check_true ("and 'no internet' with it", visible_settles_to (conn, FALSE));
     check_true ("a radio that still says on stays",
                 gtk_widget_get_visible (bt));
-    check_true ("the same icon outside our box (quick settings) is left alone",
+    check_true ("the same icon outside the top bar (quick settings) is left alone",
                 gtk_widget_get_visible (elsewhere));
 
     gtk_image_set_from_icon_name (GTK_IMAGE (bt), "bluetooth-disabled-symbolic",
@@ -289,7 +302,19 @@ main (int argc, char *argv[])
     check_true ("network released: 'Wi-Fi off' comes back",
                 visible_settles_to (wifi, TRUE));
     check_true ("and 'Bluetooth off' too", visible_settles_to (bt, TRUE));
+    check_true ("and 'no internet'", visible_settles_to (conn, TRUE));
 
+    gtk_image_set_from_icon_name (GTK_IMAGE (wifi), "network-wireless-signal-good-symbolic",
+                                  GTK_ICON_SIZE_MENU);
+    set_switch ("nwk_switch", "0\n");
+    check_true ("engaged with Wi-Fi still on", visible_settles_to (bt, FALSE));
+    check_true ("then 'no internet' is news and stays",
+                gtk_widget_get_visible (conn));
+    set_switch ("nwk_switch", "1\n");
+    visible_settles_to (bt, TRUE);
+
+    gtk_image_set_from_icon_name (GTK_IMAGE (wifi), "network-wireless-disabled-symbolic",
+                                  GTK_ICON_SIZE_MENU);
     gtk_widget_set_visible (wifi, FALSE);
     set_switch ("nwk_switch", "0\n");
     check_true ("engaged again", visible_settles_to (bt, FALSE));

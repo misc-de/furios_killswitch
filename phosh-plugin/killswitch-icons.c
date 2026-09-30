@@ -20,8 +20,8 @@
  *
  * This runs in phosh's process, so it does as little as a thing can do: it
  * reads two small sysfs attributes on a timer and shows or hides two images -
- * and, while the network switch is engaged, phosh's own "Wi-Fi off" and
- * "Bluetooth off" icons next to them (see hide_radio_icons).
+ * and, while the network switch is engaged, phosh's own "Wi-Fi off",
+ * "Bluetooth off" and "no internet" icons (see hide_radio_icons).
  * Every failure is "show nothing" - a shell that died over an odd byte in
  * sysfs would be a far worse bargain than a missing icon. It never writes,
  * never calls out, and holds nothing but two booleans.
@@ -90,6 +90,14 @@ static const struct {
    switch. Hidden only while they say "off": one that still shows Wi-Fi on is
    news and stays. */
 static const char *const RADIO_TYPES[] = { "PhoshWifiInfo", "PhoshBtInfo" };
+/* phosh's "no internet" icon: only there while there is none, so it says off
+   by being there - and repeats our icon unless Wi-Fi is still on. */
+#define CONNECTIVITY_TYPE "PhoshConnectivityInfo"
+/* The top bar's name in phosh's top-panel.ui. The radio icons are not our
+   siblings: they sit in box_network left of the clock, we sit in the
+   indicator box right of it. Both are inside this; the quick settings, which
+   use the same types, are not. */
+#define TOP_BAR_NAME "top-bar"
 #define HIDDEN_BY_US "furios-killswitch-hidden"
 
 
@@ -137,12 +145,17 @@ read_engaged (FuriosKillswitchIcons *self, const char *attribute)
 
 
 static gboolean
+is_type (GtkWidget *widget, const char *type)
+{
+  return g_strcmp0 (G_OBJECT_TYPE_NAME (widget), type) == 0;
+}
+
+
+static gboolean
 is_radio_icon (GtkWidget *widget)
 {
-  const char *name = G_OBJECT_TYPE_NAME (widget);
-
   for (gsize i = 0; i < G_N_ELEMENTS (RADIO_TYPES); i++)
-    if (g_strcmp0 (name, RADIO_TYPES[i]) == 0)
+    if (is_type (widget, RADIO_TYPES[i]))
       return TRUE;
   return FALSE;
 }
@@ -160,42 +173,79 @@ says_off (GtkWidget *widget)
 }
 
 
+/* The top bar around us, or our own box when there is none to be found (a
+   phosh that renamed it): then at least our siblings are looked at. */
+static GtkWidget *
+top_bar (FuriosKillswitchIcons *self)
+{
+  GtkWidget *parent = gtk_widget_get_parent (GTK_WIDGET (self));
+
+  for (GtkWidget *w = parent; w; w = gtk_widget_get_parent (w))
+    if (g_strcmp0 (gtk_widget_get_name (w), TOP_BAR_NAME) == 0)
+      return w;
+  return parent;
+}
+
+
+/* Every icon of interest below `widget`. forall, not get_children: the icons
+   sit inside PhoshRevealers, and their GtkRevealer is an internal child. */
+static void
+collect_icons (GtkWidget *widget, gpointer data)
+{
+  GPtrArray *icons = data;
+
+  if (is_radio_icon (widget) || is_type (widget, CONNECTIVITY_TYPE)) {
+    g_ptr_array_add (icons, widget);
+    return;
+  }
+  if (GTK_IS_CONTAINER (widget))
+    gtk_container_forall (GTK_CONTAINER (widget), collect_icons, icons);
+}
+
+
 /*
  * With the network switch engaged, our icon already says every radio is off;
- * phosh's "Wi-Fi off" and "Bluetooth off" beside it only repeat that. They are
- * hidden while the switch is engaged and brought back after - but only the
- * ones hidden here, marked on the widget itself, so an icon phosh hid for its
- * own reasons is never shown by us.
+ * phosh's "Wi-Fi off", "Bluetooth off" and "no internet" only repeat that.
+ * They are hidden while the switch is engaged and brought back after - but
+ * only the ones hidden here, marked on the widget itself, so an icon phosh
+ * hid for its own reasons is never shown by us.
  *
- * Only our siblings in the indicator box: the quick settings use the same
- * types, and those are not ours to touch.
+ * Only inside the top bar: the quick settings use the same types, and those
+ * are not ours to touch.
  */
 static void
 hide_radio_icons (FuriosKillswitchIcons *self, gboolean engaged)
 {
-  GtkWidget *parent = gtk_widget_get_parent (GTK_WIDGET (self));
-  g_autoptr (GList) children = NULL;
+  GtkWidget *bar = top_bar (self);
+  g_autoptr (GPtrArray) icons = g_ptr_array_new ();
+  gboolean wifi_on = FALSE;
 
-  if (!GTK_IS_CONTAINER (parent))
+  if (!GTK_IS_CONTAINER (bar))
     return;
 
-  children = gtk_container_get_children (GTK_CONTAINER (parent));
-  for (GList *l = children; l; l = l->next) {
-    GtkWidget *child = l->data;
-    gboolean ours = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (child),
+  gtk_container_forall (GTK_CONTAINER (bar), collect_icons, icons);
+
+  for (guint i = 0; i < icons->len; i++) {
+    GtkWidget *icon = g_ptr_array_index (icons, i);
+
+    if (is_type (icon, "PhoshWifiInfo") && !says_off (icon))
+      wifi_on = TRUE;
+  }
+
+  for (guint i = 0; i < icons->len; i++) {
+    GtkWidget *icon = g_ptr_array_index (icons, i);
+    gboolean ours = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (icon),
                                                         HIDDEN_BY_US));
+    gboolean repeats = is_radio_icon (icon) ? says_off (icon) : !wifi_on;
 
-    if (!is_radio_icon (child))
-      continue;
-
-    if (engaged && says_off (child)) {
-      if (gtk_widget_get_visible (child)) {
-        gtk_widget_set_visible (child, FALSE);
-        g_object_set_data (G_OBJECT (child), HIDDEN_BY_US, GINT_TO_POINTER (1));
+    if (engaged && repeats) {
+      if (gtk_widget_get_visible (icon)) {
+        gtk_widget_set_visible (icon, FALSE);
+        g_object_set_data (G_OBJECT (icon), HIDDEN_BY_US, GINT_TO_POINTER (1));
       }
     } else if (ours) {
-      g_object_set_data (G_OBJECT (child), HIDDEN_BY_US, NULL);
-      gtk_widget_set_visible (child, TRUE);
+      g_object_set_data (G_OBJECT (icon), HIDDEN_BY_US, NULL);
+      gtk_widget_set_visible (icon, TRUE);
     }
   }
 }
