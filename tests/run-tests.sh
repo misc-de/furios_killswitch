@@ -387,6 +387,24 @@ else
     fi
 fi
 
+# furios-nwk-mask: while its file exists the network slider is ignored -
+# reported as such, never as engaged, and the extra radios are not touched.
+mkdir -p "$TMP/mask"; printf '0\n' > "$TMP/nwk_switch"; printf '1\n' > "$TMP/mask/nwk_switch"
+out="$(FURIOS_KILLSWITCH_BASE=$TMP FURIOS_NWK_MASK_DIR=$TMP/mask "$PROG" status)"
+check "masked slider reads as ignored" "1" "$(grep -c 'nwk_switch: ignored' <<<"$out")"
+check "masked slider is never ENGAGED" "0" "$(grep -c 'nwk_switch: ENGAGED' <<<"$out")"
+check "status --json says it is ignored" "1" \
+    "$(FURIOS_KILLSWITCH_BASE=$TMP FURIOS_NWK_MASK_DIR=$TMP/mask "$PROG" status --json \
+       | grep -c '"network_switch_ignored": true')"
+check "without the file the slider counts again" "1" \
+    "$(FURIOS_KILLSWITCH_BASE=$TMP FURIOS_NWK_MASK_DIR=$TMP/none "$PROG" status | grep -c 'nwk_switch: ENGAGED')"
+check "the mask unit stops through release" "1" \
+    "$(grep -c '^ExecStopPost=/usr/local/sbin/furios-nwk-mask release' "$SRC/systemd/furios-nwk-mask.service")"
+check "the mask unit is never enabled by install.sh" "0" \
+    "$(grep -c 'enable.*furios-nwk-mask' "$SRC/install.sh")"
+check "furios-nwk-mask parses" "0" "$(sh -n "$SRC/furios-nwk-mask"; echo $?)"
+printf '1\n' > "$TMP/nwk_switch"
+
 # The invariant between install.sh and uninstall.sh, in a sandbox of its own:
 # see the file for what is stubbed and why.
 echo

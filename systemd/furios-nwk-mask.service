@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 misc-de
+# SPDX-License-Identifier: MIT
+[Unit]
+Description=Android ignores the FLX1 network slider (loose contact)
+Documentation=file:/usr/local/share/doc/killswitch-indicator/FINDINGS.md
+# The mount lives in the container's namespace: a restarted container has
+# none, and PartOf brings this along so it is hung in again at once.
+After=lxc@android.service
+PartOf=lxc@android.service
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/furios-nwk-mask watch
+# Stopping (disable --now from the app) honours the slider again.
+ExecStopPost=/usr/local/sbin/furios-nwk-mask release
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=lxc@android.service

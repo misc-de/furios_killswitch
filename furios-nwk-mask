@@ -1,0 +1,94 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: Copyright (c) 2026 misc-de
+# SPDX-License-Identifier: MIT
+#
+# Makes Android ignore the network slider.
+#
+# The slider is read by Android's NVRAM HAL inside the LXC container, from
+# sysfs (see FINDINGS.md, "The kill switch logic lives in Android"). A slider
+# with a loose contact flaps on its own - 65 edges in an afternoon on
+# 1.10.2026, untouched - and on 30.9. that coincided with two modem resets.
+# This puts a file that always says "free" over that one attribute, in the
+# container's mount namespace only: Linux, the daemon and the camera slider
+# keep seeing the real thing.
+#
+#   apply    hang the file in, unless it is in already
+#   watch    apply now and again every 15 s - a restarted container has a
+#            fresh mount namespace and forgets it
+#   release  take it out again and remove the file
+#   status   "ignored" or "honoured", exit 0 / 1
+#
+# Measured on 1.10.: mounting from outside works (mount -N), unmounting does
+# not - umount -N cannot find the path - so that runs inside the container,
+# through lxc-attach. The file has to outlive the mount: it is the source.
+set -u
+
+TARGET=/sys/devices/platform/custom-keys/nwk_switch
+DIR=${FURIOS_NWK_MASK_DIR:-/mnt/furios-killswitch}
+FILE=$DIR/nwk_switch
+CONTAINER=android
+INTERVAL=15
+
+container_pid() {
+    lxc-info -n "$CONTAINER" -p -H </dev/null 2>/dev/null
+}
+
+# In only when the container's own view of the attribute is our file, which
+# is the only test that cannot be fooled by a leftover line or a stale pid.
+masked() {
+    pid=$1
+    [ -n "$pid" ] && [ -e "$FILE" ] || return 1
+    [ "$(stat -c %i "/proc/$pid/root$TARGET" 2>/dev/null)" = \
+      "$(stat -c %i "$FILE")" ]
+}
+
+apply() {
+    pid=$(container_pid)
+    [ -n "$pid" ] || { echo "container $CONTAINER is not running" >&2; return 1; }
+    mkdir -p "$DIR"
+    if [ ! -e "$FILE" ]; then
+        printf '1\n' > "$FILE.tmp" && chmod 444 "$FILE.tmp" && mv "$FILE.tmp" "$FILE"
+    fi
+    masked "$pid" && return 0
+    if mount -N "/proc/$pid/ns/mnt" --bind "$FILE" "$TARGET" && masked "$pid"; then
+        echo "network slider ignored (container pid $pid)"
+        return 0
+    fi
+    echo "could not hang the file into the container" >&2
+    return 1
+}
+
+release() {
+    pid=$(container_pid)
+    rc=0
+    if masked "$pid"; then
+        lxc-attach -n "$CONTAINER" -- /system/bin/umount "$TARGET" </dev/null
+        if masked "$pid"; then
+            echo "still ignored - the umount inside the container failed" >&2
+            rc=1
+        fi
+    fi
+    # The source only once nothing hangs from it any more: deleted under a
+    # live mount, the container keeps reading "free" from a file nobody can
+    # see, and nothing here could tell that apart from a release.
+    if [ "$rc" = 0 ]; then
+        rm -f "$FILE" "$FILE.tmp"
+        rmdir "$DIR" 2>/dev/null
+        echo "network slider honoured again"
+    fi
+    return "$rc"
+}
+
+case "${1:-}" in
+    apply) apply ;;
+    watch)
+        while :; do
+            apply >/dev/null || true
+            sleep "$INTERVAL"
+        done ;;
+    release) release ;;
+    status)
+        if masked "$(container_pid)"; then echo ignored; exit 0; fi
+        echo honoured; exit 1 ;;
+    *) echo "usage: furios-nwk-mask apply|watch|release|status" >&2; exit 2 ;;
+esac
