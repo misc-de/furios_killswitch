@@ -32,15 +32,15 @@ systemctl --user disable --now killswitch-indicator.service 2>/dev/null || true
 # enabled - the record says so, and there is nothing to enable again.
 rm -f "$UNIT"/*.wants/killswitch-indicator.service
 
-# furios-nwk-mask: stopping it hands the slider back to Android (its
+# furios-switch-mask: stopping it hands the slider back to Android (its
 # ExecStopPost), and only then do the unit and the program go.
 if [ -z "$DESTDIR" ]; then
-    sudo systemctl disable --now furios-nwk-mask.service 2>/dev/null || true
+    sudo systemctl disable --now furios-switch-mask.service 2>/dev/null || true
 fi
-sudo rm -f "$DESTDIR/etc/systemd/system/lxc@android.service.wants/furios-nwk-mask.service"
+sudo rm -f "$DESTDIR/etc/systemd/system/lxc@android.service.wants/furios-switch-mask.service"
 sudo rmdir "$DESTDIR/etc/systemd/system/lxc@android.service.wants" 2>/dev/null || true
-sudo rm -f "$DESTDIR/etc/systemd/system/furios-nwk-mask.service" \
-           "$DESTDIR/usr/local/sbin/furios-nwk-mask"
+sudo rm -f "$DESTDIR/etc/systemd/system/furios-switch-mask.service" \
+           "$DESTDIR/usr/local/sbin/furios-switch-mask"
 [ -n "$DESTDIR" ] || sudo systemctl daemon-reload 2>/dev/null || true
 
 # With the daemon stopped, through the checkout's copy (which is there even

@@ -105,12 +105,12 @@ if [ "$1" = rmdir ]; then
     done
     exec "$@"
 fi
-# furios-nwk-mask: its program and unit, put in and taken out - only ever
+# furios-switch-mask: its program and unit, put in and taken out - only ever
 # inside the sandbox (install.sh and uninstall.sh prefix them with DESTDIR).
 if [ "$1" = install ] || [ "$1" = rm ]; then
     for a in "${@:2}"; do
         case $a in -*|[0-7][0-7][0-7][0-7]) ;; "$SANDBOX"/*) ;;
-            */systemd/furios-nwk-mask.service|*/furios_killswitch*/furios-nwk-mask) ;;
+            */systemd/furios-switch-mask.service|*/furios_killswitch*/furios-switch-mask) ;;
             *) echo "sudo: $1 outside the sandbox: $a" >&2; exit 1 ;; esac
     done
     exec "$@"
@@ -188,9 +188,9 @@ scenario() {
     keys=$(grep -v '^\[' "$SANDBOX/home/.config/glib-2.0/settings/keyfile" 2>/dev/null | grep .)
     check "$1: no setting left changed (reset, not a copy of the default)" "" "$keys"
     check "$1: root only for make install/uninstall, the mask files and rmdir" "" \
-        "$(grep -vE '^make -C .*phosh-plugin (install|uninstall)( |$)|^rmdir |^(install -D|rm -f) .*(furios-nwk-mask)' "$SANDBOX/sudo.log")"
+        "$(grep -vE '^make -C .*phosh-plugin (install|uninstall)( |$)|^rmdir |^(install -D|rm -f) .*(furios-switch-mask)' "$SANDBOX/sudo.log")"
     check "$1: the mask program and unit are gone again" "0" \
-        "$(find "$SANDBOX/root" -name 'furios-nwk-mask*' | wc -l)"
+        "$(find "$SANDBOX/root" -name 'furios-switch-mask*' | wc -l)"
 }
 
 scenario "with a user manager" ""

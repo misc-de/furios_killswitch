@@ -59,15 +59,20 @@ make -C "$SRC/phosh-plugin" all
 echo "2) installing them where phosh looks"
 sudo make -C "$SRC/phosh-plugin" install DESTDIR="$DESTDIR"
 
-echo "3) installing furios-nwk-mask (off - the app's switch turns it on)"
+echo "3) installing furios-switch-mask (off - the app's switch turns it on)"
 # Root's, because it mounts into the Android container. Installed, never
 # enabled here: a phone whose slider works has no use for it.
-sudo install -D -m 0755 "$SRC/furios-nwk-mask" "$DESTDIR/usr/local/sbin/furios-nwk-mask"
-sudo install -D -m 0644 "$SRC/systemd/furios-nwk-mask.service" \
-    "$DESTDIR/etc/systemd/system/furios-nwk-mask.service"
+# Its first name, from the day it covered the network slider only.
+if [ -z "$DESTDIR" ] && [ -e /etc/systemd/system/furios-nwk-mask.service ]; then
+    sudo systemctl disable --now furios-nwk-mask.service 2>/dev/null || true
+    sudo rm -f /etc/systemd/system/furios-nwk-mask.service /usr/local/sbin/furios-nwk-mask
+fi
+sudo install -D -m 0755 "$SRC/furios-switch-mask" "$DESTDIR/usr/local/sbin/furios-switch-mask"
+sudo install -D -m 0644 "$SRC/systemd/furios-switch-mask.service" \
+    "$DESTDIR/etc/systemd/system/furios-switch-mask.service"
 if [ -z "$DESTDIR" ]; then
     sudo systemctl daemon-reload
-    sudo systemctl try-restart furios-nwk-mask.service
+    sudo systemctl try-restart furios-switch-mask.service
 fi
 
 echo "4) installing the daemon"

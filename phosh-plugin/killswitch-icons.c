@@ -42,10 +42,10 @@
 #define BASE_DEFAULT "/sys/devices/platform/custom-keys"
 #define BASE_ENV     "FURIOS_KILLSWITCH_BASE"
 
-/* furios-nwk-mask keeps Android off a network slider with a loose contact.
-   While its file exists the slider does nothing, so no icon claims it does. */
-#define NWK_MASK_DEFAULT "/mnt/furios-killswitch/nwk_switch"
-#define NWK_MASK_ENV     "FURIOS_NWK_MASK_DIR"
+/* furios-switch-mask keeps Android off sliders with a loose contact. While
+   a slider's file exists it does nothing, so no icon claims it does. */
+#define MASK_DIR_DEFAULT "/mnt/furios-killswitch"
+#define MASK_DIR_ENV     "FURIOS_SWITCH_MASK_DIR"
 
 /* The attribute reads "1" while the switch lets the hardware work and "0"
    while it is engaged. Anything else is not an answer - see read_engaged. */
@@ -150,15 +150,11 @@ read_engaged (FuriosKillswitchIcons *self, const char *attribute)
 
 
 static gboolean
-network_ignored (void)
+switch_ignored (const char *attribute)
 {
-  const char *dir = g_getenv (NWK_MASK_ENV);
-  g_autofree char *path = NULL;
-
-  if (dir && *dir)
-    path = g_build_filename (dir, "nwk_switch", NULL);
-  else
-    path = g_strdup (NWK_MASK_DEFAULT);
+  const char *dir = g_getenv (MASK_DIR_ENV);
+  g_autofree char *path = g_build_filename (dir && *dir ? dir : MASK_DIR_DEFAULT,
+                                            attribute, NULL);
 
   return g_file_test (path, G_FILE_TEST_EXISTS);
 }
@@ -286,7 +282,7 @@ refresh (FuriosKillswitchIcons *self)
   for (gsize i = 0; i < N_SWITCHES; i++) {
     gboolean engaged = read_engaged (self, SWITCHES[i].attribute);
 
-    if (i == NETWORK_SWITCH && network_ignored ())
+    if (switch_ignored (SWITCHES[i].attribute))
       engaged = FALSE;
 
     gtk_widget_set_visible (self->images[i], engaged);

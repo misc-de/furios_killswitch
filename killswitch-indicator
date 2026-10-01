@@ -50,16 +50,15 @@ SWITCHES = [
 ]
 ENGAGED = "0"
 
-# While furios-nwk-mask holds Android off the network slider (a loose contact
-# that flaps on its own), the slider has no effect - so it is not shown as
-# engaged and switches no extra radios either. Its source file is the sign:
-# it exists exactly while the mask is meant to be in.
-NWK_MASK_FILE = os.path.join(
-    os.environ.get("FURIOS_NWK_MASK_DIR", "/mnt/furios-killswitch"), "nwk_switch")
+# While furios-switch-mask holds Android off the camera and network sliders
+# (a loose contact flaps on its own), they have no effect - so they are not
+# shown as engaged and switch no extra radios either. Each one's source file
+# is the sign: it exists exactly while the mask is meant to be in.
+SWITCH_MASK_DIR = os.environ.get("FURIOS_SWITCH_MASK_DIR", "/mnt/furios-killswitch")
 
 
-def network_ignored():
-    return os.path.exists(NWK_MASK_FILE)
+def switch_ignored(name):
+    return os.path.exists(os.path.join(SWITCH_MASK_DIR, name))
 
 # The third switch -- the microphone one -- has no readable state at all. It is
 # the only one of the three that physically cuts the line, and that is exactly
@@ -350,10 +349,10 @@ def original_paths(plugin_dir):
     if plugin_dir:
         system = [os.path.join(plugin_dir, f"libphosh-plugin-{PLUGIN_ID}.so"),
                   os.path.join(plugin_dir, f"{PLUGIN_ID}.plugin")]
-    # furios-nwk-mask, and the enable link the app's switch makes for it.
-    system += ["/usr/local/sbin/furios-nwk-mask",
-               "/etc/systemd/system/furios-nwk-mask.service",
-               "/etc/systemd/system/lxc@android.service.wants/furios-nwk-mask.service"]
+    # furios-switch-mask, and the enable link the app's switch makes for it.
+    system += ["/usr/local/sbin/furios-switch-mask",
+               "/etc/systemd/system/furios-switch-mask.service",
+               "/etc/systemd/system/lxc@android.service.wants/furios-switch-mask.service"]
     home_paths = [
         os.path.join(home, ".local", "bin", "killswitch-indicator"),
         os.path.join(unit_dir, "killswitch-indicator.service"),
@@ -824,7 +823,8 @@ def cmd_status(args):
         state = load_state()
         data = {
             "switches": {name: read_switch(name) for name, _label in SWITCHES},
-            "network_switch_ignored": network_ignored(),
+            "switches_ignored": {name: switch_ignored(name)
+                                 for name, _label in SWITCHES},
             "icons": icons_listed(),
             "network_extras": {r: config_enabled(config, r) for r in RADIOS},
             "radios": {r: radio_state(r) for r in RADIOS},
@@ -840,8 +840,8 @@ def cmd_status(args):
         if value is None:
             print(f"{name}: not readable ({os.path.join(BASE, name)})")
             missing = True
-        elif name == "nwk_switch" and network_ignored():
-            print(f"{name}: ignored (sysfs={value})  # {label}, see furios-nwk-mask")
+        elif switch_ignored(name):
+            print(f"{name}: ignored (sysfs={value})  # {label}, see furios-switch-mask")
         else:
             print(f"{name}: {'ENGAGED' if value == ENGAGED else 'free'} (sysfs={value})  # {label}")
     return 1 if missing else 0
@@ -894,7 +894,7 @@ class Watcher:
                 # position stands until the switch can be read again.
                 continue
             locked = value == ENGAGED
-            if name == "nwk_switch" and network_ignored():
+            if switch_ignored(name):
                 locked = False
             if initial or self.state.get(name) != locked:
                 self.state[name] = locked
