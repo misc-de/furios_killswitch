@@ -17,6 +17,12 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 pass=0; fail=0
 
+# furios-switch-mask's directory, empty: on a phone where the mask is in use
+# the real one says "ignored" for both sliders and every check below that
+# expects ENGAGED would fail. The mask checks further down name their own.
+mkdir -p "$TMP/nomask"
+export FURIOS_SWITCH_MASK_DIR="$TMP/nomask"
+
 check() { # name, expected, actual
     if [ "$2" = "$3" ]; then printf 'PASS  %s\n' "$1"; pass=$((pass+1))
     else printf 'FAIL  %s\n        expected: %s\n        got: %s\n' "$1" "$2" "$3"; fail=$((fail+1)); fi

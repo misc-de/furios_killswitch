@@ -15,21 +15,30 @@
  * will hold, build the widget - and then move the switches under it.
  *
  * The switches are a directory of files here, pointed at with the same
- * environment variable the daemon's tests use. Nothing in this test touches
- * the real ones, and it needs no phone: what it checks is the part that is
- * ours - which files make an icon appear, and which do not.
+ * environment variable the daemon's tests use, and so is furios-switch-mask's
+ * directory: on a phone where the mask is in use the real one would hide
+ * every icon this test waits for. Nothing in this test touches the real
+ * ones, and it needs no phone: what it checks is the part that is ours -
+ * which files make an icon appear, and which do not.
+ *
+ * When the plugin reads is counted with inotify on the switch directory: a
+ * read is an open, and the plugin opens nothing else there.
  */
 
 #include <gtk/gtk.h>
 #include <gio/gio.h>
 #include <glib/gstdio.h>
 #include <phosh-plugin.h>
+#include <sys/inotify.h>
+#include <unistd.h>
 
 #define PLUGIN_NAME "furios-killswitch"
 
 static int checks = 0;
 static int failures = 0;
 static char *base = NULL;
+static char *mask = NULL;
+static int reads_fd = -1;
 
 
 static void
@@ -139,6 +148,117 @@ radio_icon (GType type, const char *icon)
 }
 
 
+static void
+set_mask (const char *attribute, gboolean present)
+{
+  g_autofree char *path = g_build_filename (mask, attribute, NULL);
+
+  if (!present)
+    g_remove (path);
+  else if (!g_file_set_contents (path, "1\n", -1, NULL))
+    g_error ("could not write %s", path);
+}
+
+
+/* Opens of the two switch files since the last call. The test's own writes
+   go through a temporary name and a rename, and are not counted. */
+static int
+drain_reads (void)
+{
+  char buffer[4096] __attribute__ ((aligned (__alignof__ (struct inotify_event))));
+  int count = 0;
+  ssize_t len;
+
+  while ((len = read (reads_fd, buffer, sizeof buffer)) > 0) {
+    for (char *p = buffer; p < buffer + len;) {
+      struct inotify_event *event = (struct inotify_event *) p;
+
+      if (event->len > 0 &&
+          (g_str_equal (event->name, "cam_switch") ||
+           g_str_equal (event->name, "nwk_switch")))
+        count++;
+      p += sizeof (struct inotify_event) + event->len;
+    }
+  }
+  return count;
+}
+
+
+/* How often the switches are read while the main loop runs for 1.5 s - one
+   and a half intervals in this test, so a live timer reads at least once. */
+static int
+reads_while_running (void)
+{
+  gint64 deadline = g_get_monotonic_time () + 1500 * 1000;
+  int count;
+
+  drain_reads ();
+  count = 0;
+  while (g_get_monotonic_time () < deadline) {
+    g_main_context_iteration (NULL, FALSE);
+    g_usleep (10 * 1000);
+    count += drain_reads ();
+  }
+  return count;
+}
+
+
+/* phosh's monitor manager, as much of it as the plugin uses: the
+   PowerSaveMode of org.gnome.Mutter.DisplayConfig, 0 on and 3 off. The two
+   functions below are the ones phosh exports, found by the plugin in this
+   program the same way (the test is linked with -rdynamic). */
+typedef struct { GObject parent; int mode; } FakeMonitors;
+typedef struct { GObjectClass parent_class; } FakeMonitorsClass;
+G_DEFINE_TYPE (FakeMonitors, fake_monitors, G_TYPE_OBJECT)
+
+static void
+fake_monitors_get_property (GObject *object, guint id, GValue *value, GParamSpec *pspec)
+{
+  g_value_set_int (value, ((FakeMonitors *) object)->mode);
+}
+
+static void
+fake_monitors_set_property (GObject *object, guint id, const GValue *value, GParamSpec *pspec)
+{
+  ((FakeMonitors *) object)->mode = g_value_get_int (value);
+  g_object_notify_by_pspec (object, pspec);
+}
+
+static void
+fake_monitors_class_init (FakeMonitorsClass *klass)
+{
+  GObjectClass *object_class = G_OBJECT_CLASS (klass);
+
+  object_class->get_property = fake_monitors_get_property;
+  object_class->set_property = fake_monitors_set_property;
+  g_object_class_install_property (object_class, 1,
+    g_param_spec_int ("power-save-mode", NULL, NULL, 0, 3, 0,
+                      G_PARAM_READWRITE | G_PARAM_EXPLICIT_NOTIFY));
+}
+
+static void
+fake_monitors_init (FakeMonitors *self)
+{
+}
+
+static GObject *fake_monitors = NULL;
+
+G_MODULE_EXPORT gpointer phosh_shell_get_default (void);
+G_MODULE_EXPORT GObject *phosh_shell_get_monitor_manager (gpointer shell);
+
+G_MODULE_EXPORT gpointer
+phosh_shell_get_default (void)
+{
+  return &fake_monitors;
+}
+
+G_MODULE_EXPORT GObject *
+phosh_shell_get_monitor_manager (gpointer shell)
+{
+  return shell == &fake_monitors ? fake_monitors : NULL;
+}
+
+
 /* Pump the main loop until `widget` has the visibility asked for. */
 static gboolean
 visible_settles_to (GtkWidget *widget, gboolean visible)
@@ -173,6 +293,14 @@ main (int argc, char *argv[])
     g_error ("no temporary directory to put the switches in");
   g_setenv ("FURIOS_KILLSWITCH_BASE", base, TRUE);
   g_setenv ("FURIOS_KILLSWITCH_INTERVAL", "1", TRUE);
+  mask = g_dir_make_tmp ("killswitch-icons-mask-XXXXXX", NULL);
+  if (mask == NULL)
+    g_error ("no temporary directory for the mask");
+  g_setenv ("FURIOS_SWITCH_MASK_DIR", mask, TRUE);
+
+  reads_fd = inotify_init1 (IN_NONBLOCK | IN_CLOEXEC);
+  if (reads_fd < 0 || inotify_add_watch (reads_fd, base, IN_OPEN) < 0)
+    g_error ("no inotify watch on %s", base);
 
   if (!gtk_init_check (&argc, &argv)) {
     g_print ("  \033[33mskipped\033[0m - no display to build a GTK widget on\n");
@@ -251,6 +379,25 @@ main (int argc, char *argv[])
   check_true ("and a value without a newline still is one",
               settles_to (widget, TRUE, FALSE));
 
+  /* furios-switch-mask: a slider whose file is in the mask directory does
+     nothing, so no icon claims it does. Each step waits for a change, so a
+     tick has provably happened in between. */
+  set_switch ("nwk_switch", "0\n");
+  check_true ("network engaged, not masked: its icon",
+              settles_to (widget, TRUE, TRUE));
+  set_mask ("nwk_switch", TRUE);
+  check_true ("masked: the network icon goes although the switch says engaged",
+              settles_to (widget, TRUE, FALSE));
+  set_mask ("cam_switch", TRUE);
+  check_true ("and a masked camera slider the same way",
+              settles_to (widget, FALSE, FALSE));
+  set_mask ("cam_switch", FALSE);
+  set_mask ("nwk_switch", FALSE);
+  check_true ("mask files gone: both count again",
+              settles_to (widget, TRUE, TRUE));
+  set_switch ("nwk_switch", "1\n");
+  settles_to (widget, TRUE, FALSE);
+
   /* phosh's "Wi-Fi off", "Bluetooth off" and "no internet" while the network
      switch is engaged: they repeat what our icon says and go away - and come
      back after, but only the ones hidden here. Laid out as phosh does it: they
@@ -323,6 +470,20 @@ main (int argc, char *argv[])
     check_true ("an icon phosh hid itself is not shown by us",
                 !gtk_widget_get_visible (wifi));
 
+    /* The plugin switched off in the settings while the network switch is
+       engaged: the widget goes first and the bar stays. What it hid comes
+       back with it - nobody else would - and what phosh hid does not. */
+    set_switch ("nwk_switch", "0\n");
+    check_true ("engaged once more", visible_settles_to (bt, FALSE));
+    check_true ("with 'no internet' hidden too", !gtk_widget_get_visible (conn));
+    gtk_widget_destroy (icons);
+    check_true ("widget gone first: 'Bluetooth off' is back at once",
+                gtk_widget_get_visible (bt));
+    check_true ("and 'no internet'", gtk_widget_get_visible (conn));
+    check_true ("and the icon phosh hid itself stays hidden",
+                !gtk_widget_get_visible (wifi));
+    set_switch ("nwk_switch", "1\n");
+
     gtk_widget_destroy (box);
     g_object_unref (box);
     g_object_unref (other_box);
@@ -332,13 +493,49 @@ main (int argc, char *argv[])
      with the widget. If it did not, it would go on reading sysfs in the
      shell's process for as long as the session lasts, with nothing to show
      it in. */
+  check_true ("a live widget does read the switches", reads_while_running () > 0);
   gtk_widget_destroy (widget);
   g_object_unref (widget);
-  set_switch ("nwk_switch", "0\n");
-  g_usleep (1200 * 1000);
-  while (g_main_context_iteration (NULL, FALSE))
-    ;
-  ok ("the timer goes when the widget does (no use-after-free here)");
+  check_true ("the timer goes when the widget does: no read after",
+              reads_while_running () == 0);
+
+  /* Nobody looking, nothing read: the timer stops while the panel window is
+     unmapped and while phosh has the display off, and each way back starts
+     with a read, so the icon is right in the first frame. An offscreen
+     window, so nothing appears on the screen of the phone this runs on. */
+  {
+    GtkWidget *window = gtk_offscreen_window_new ();
+    GtkWidget *icons = g_object_new (type, NULL);
+
+    fake_monitors = g_object_new (fake_monitors_get_type (), NULL);
+    set_switch ("cam_switch", "1\n");
+    set_switch ("nwk_switch", "1\n");
+    gtk_container_add (GTK_CONTAINER (window), icons);
+
+    check_true ("in a window not shown yet: no reads",
+                reads_while_running () == 0);
+    gtk_widget_show (window);
+    check_true ("window shown: the switches are read", reads_while_running () > 0);
+
+    gtk_widget_hide (window);
+    check_true ("window hidden: no reads", reads_while_running () == 0);
+    set_switch ("nwk_switch", "0\n");
+    gtk_widget_show (window);
+    check_true ("shown again: what changed meanwhile is there at once",
+                gtk_widget_get_visible (icons) &&
+                gtk_widget_get_visible (image_at (icons, 1)));
+
+    g_object_set (fake_monitors, "power-save-mode", 3, NULL);
+    check_true ("display off: no reads", reads_while_running () == 0);
+    set_switch ("nwk_switch", "1\n");
+    g_object_set (fake_monitors, "power-save-mode", 0, NULL);
+    check_true ("display on: read at once", !gtk_widget_get_visible (icons));
+    check_true ("and read on the timer again", reads_while_running () > 0);
+
+    gtk_widget_destroy (window);
+    check_true ("window and widget gone: no reads", reads_while_running () == 0);
+    g_clear_object (&fake_monitors);
+  }
 
   g_print ("\n");
   if (failures == 0)

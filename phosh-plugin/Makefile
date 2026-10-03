@@ -8,7 +8,7 @@
 
 PLUGIN      := furios-killswitch
 SO          := libphosh-plugin-$(PLUGIN).so
-PKGS        := gtk+-3.0 gio-2.0 phosh-plugins
+PKGS        := gtk+-3.0 gio-2.0 gmodule-no-export-2.0 phosh-plugins
 PLUGIN_DIR  := $(shell pkg-config --variable=status_icons_plugins_dir phosh-plugins)
 
 CFLAGS  ?= -O2 -g
@@ -37,8 +37,10 @@ uninstall:
 # The test builds against the same headers and loads the built .so the way
 # the shell does. It needs a display, and says so rather than failing when
 # there is none - see tests/run-tests.sh.
+# -rdynamic: the test stands in for phosh's two exported shell functions,
+# and the plugin finds them the way it does in phosh - in the program.
 tests/plugin-loads: tests/plugin-loads.c
-	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS)
+	$(CC) $(CFLAGS) -rdynamic -o $@ $< $(LDLIBS)
 
 check: $(SO) tests/plugin-loads
 	./tests/plugin-loads .
